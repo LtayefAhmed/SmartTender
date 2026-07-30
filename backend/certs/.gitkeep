@@ -1,0 +1,8 @@
+Put TUNTRUST PEM files here. This directory is git-ignored except this file.
+
+    openssl pkcs12 -in tuntrust.p12 -clcerts -nokeys -out tuneps-cert.pem
+    openssl pkcs12 -in tuntrust.p12 -nocerts -nodes  -out tuneps-key.pem
+
+Then in .env (paths as seen INSIDE the container):
+    SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH=/app/certs/tuneps-cert.pem
+    SMARTTENDER_CONNECTOR_TUNEPS_KEY_PATH=/app/certs/tuneps-key.pem

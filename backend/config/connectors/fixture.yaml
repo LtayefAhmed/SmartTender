@@ -1,0 +1,92 @@
+# =============================================================================
+# Fixture connector — serves tenders from local HTML/JSON files on disk.
+#
+# Not a real source. It exists so that the *whole* pipeline (scraping job →
+# validation → dedup → ingestion → scoring → notification) can be exercised
+# end-to-end in CI and in local development with zero network access and fully
+# deterministic output. It is also the reference implementation a developer
+# copies when adding a new connector.
+#
+# Disabled outside development.
+# =============================================================================
+key: "fixture"
+name: "Fixture — source locale déterministe"
+enabled: true
+environments: ["development", "test"]
+country: "Tunisie"
+language: "fr"
+timezone: "Africa/Tunis"
+
+strategy: "static"
+
+base_url: "file://fixtures"
+fixtures_dir: "tests/fixtures/pages"
+
+endpoints:
+  search: "/listing_page_{page}.html"
+  detail: "/detail_{reference}.html"
+
+pagination:
+  mode: "path"
+  page_param: "page"
+  start_page: 1
+  max_pages: 3
+  stop_on_empty_page: true
+
+filter_mapping:
+  keywords: "q"
+  country: null
+  organization: null
+  procurement_type: null
+  publication_date_from: null
+  deadline_to: null
+
+selectors:
+  list_container: "table.tenders"
+  list_item: "table.tenders tbody tr"
+  no_results: "p.no-results"
+  item:
+    reference: "td.ref"
+    title: "td.title a"
+    detail_url: "td.title a@href"
+    buyer: "td.buyer"
+    publication_date: "td.published"
+    deadline: "td.deadline"
+    estimated_budget: "td.budget"
+  detail:
+    title: "h1"
+    description: "div.description"
+    buyer: "span.buyer"
+    deadline: "span.deadline"
+    estimated_budget: "span.budget"
+    location: "span.location"
+    sector: "span.sector"
+    cpv_codes: "span.cpv"
+    documents: "ul.docs a@href"
+
+parsing:
+  date_formats: ["%d/%m/%Y", "%Y-%m-%d"]
+  decimal_separator: ","
+  thousands_separator: " "
+  default_currency: "TND"
+
+required_fields: ["title", "source_url"]
+
+documents:
+  download: false
+
+http:
+  robots:
+    enabled: false
+  rate_limit:
+    enabled: false
+  retry:
+    max_attempts: 1
+  # This connector never touches the network, so there is nothing to protect —
+  # and leaving it on would make the offline test suite reach for Redis.
+  circuit_breaker:
+    enabled: false
+
+health:
+  min_expected_items: 1
+  max_acceptable_duration_seconds: 10

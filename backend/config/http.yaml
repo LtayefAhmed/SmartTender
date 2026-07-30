@@ -1,0 +1,103 @@
+# =============================================================================
+# Global HTTP / fetching policy.
+#
+# Every value here can be overridden per connector in
+# `config/connectors/<name>.yaml` under the `http:` key. Connector-level
+# settings win; anything absent falls back to these defaults.
+# =============================================================================
+
+timeouts:
+  connect_seconds: 10.0
+  read_seconds: 30.0
+  write_seconds: 15.0
+  pool_seconds: 5.0
+  # Hard ceiling for a whole page fetch including retries. A fetch that blows
+  # through this is abandoned — the pipeline must never block.
+  total_seconds: 120.0
+
+retry:
+  max_attempts: 4              # 1 initial + 3 retries
+  initial_backoff_seconds: 1.0
+  backoff_multiplier: 2.0      # 1s -> 2s -> 4s -> abort
+  max_backoff_seconds: 30.0
+  jitter_ratio: 0.25           # +/- 25% randomisation to avoid thundering herds
+  retry_on_status: [408, 425, 429, 500, 502, 503, 504]
+  # 429 responses honour Retry-After when present, capped by max_backoff.
+  respect_retry_after: true
+
+rate_limit:
+  # Token-bucket per (connector, host). Shared across workers through Redis so
+  # scaling out workers does not multiply the load we put on a portal.
+  enabled: true
+  requests_per_second: 1.0
+  burst: 3
+  # Politeness delay applied on top of the bucket, randomised in this range.
+  jitter_seconds: [0.2, 0.8]
+
+concurrency:
+  # Max simultaneous in-flight requests for a single connector run.
+  per_connector: 4
+  # Max simultaneous connector runs in a single scraping job.
+  per_job: 6
+
+robots:
+  # When enabled the downloader fetches and caches /robots.txt and refuses
+  # disallowed paths. Portals we have an explicit agreement with (or that we
+  # access through their API) can opt out per connector.
+  enabled: true
+  cache_ttl_seconds: 3600
+  user_agent_token: "SmartTenderBot"
+  # If robots.txt itself cannot be fetched, do we proceed?
+  allow_on_fetch_failure: true
+
+headers:
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  Accept-Language: "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"
+  Accept-Encoding: "gzip, deflate, br"
+  Cache-Control: "no-cache"
+  Pragma: "no-cache"
+  Upgrade-Insecure-Requests: "1"
+
+user_agents:
+  # Rotation pool. `strategy` is one of: fixed | random | round_robin | sticky.
+  # `sticky` keeps one UA for the whole connector run, which is what most
+  # session-based portals expect.
+  strategy: "sticky"
+  pool:
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15"
+  # Identify ourselves honestly when a portal is public and cooperative.
+  transparent_agent: "SmartTenderBot/1.0 (+https://inetum.com; tender-monitoring)"
+
+circuit_breaker:
+  # Per source. Protects both us and the portal: once a source is clearly down
+  # we stop hammering it and the rest of the pipeline carries on untouched.
+  enabled: true
+  failure_threshold: 5          # consecutive failures before opening
+  recovery_timeout_seconds: 600 # how long the circuit stays open
+  half_open_max_calls: 1        # probes allowed while half-open
+  success_threshold: 2          # successes needed to close again
+
+browser:
+  # Playwright is used only when a connector declares `strategy: dynamic`.
+  engine: "chromium"
+  headless: true
+  navigation_timeout_ms: 45000
+  default_timeout_ms: 20000
+  viewport: { width: 1440, height: 900 }
+  locale: "fr-FR"
+  timezone: "Africa/Tunis"
+  # Blocking heavy resources cuts page load time by ~60% on portal listings.
+  block_resource_types: ["image", "media", "font"]
+  # Reuse one browser process per worker; contexts are per connector run.
+  reuse_browser: true
+
+proxy:
+  enabled: false
+  rotation: "round_robin"      # round_robin | random | sticky_per_run
+  # URLs are injected from SMARTTENDER_PROXY__URLS; listing them here is only
+  # for non-secret static pools.
+  urls: []

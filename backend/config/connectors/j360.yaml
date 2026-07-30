@@ -1,0 +1,198 @@
+# =============================================================================
+# J360 — commercial tender aggregator (https://app.j360.info)
+#
+# Real contract, captured from the application:
+#     GET /api/searches/{saved_search_id}/announces?order_by=date_limite
+#     → {count, next, previous, results[], current_page, total_pages, paginate_by}
+#
+# Django REST Framework behind JWT-in-cookie (SimpleJWT).
+#
+# ── AUTHENTICATION ──────────────────────────────────────────────────────────
+# The login is behind an anti-bot layer, so it is captured once in a real
+# browser:
+#     smarttender-admin capture-login j360
+#
+# That yields two cookies with very different lifetimes:
+#     JWT-access    ~15 minutes   ← dies mid-crawl, always
+#     JWT-refresh   ~4 years      ← used to mint new access tokens
+#
+# So the connector refreshes the access token itself (see `token_refresh`)
+# rather than asking a human to re-capture every quarter of an hour.
+#
+# ── ⚠ BILLING: DETAIL FETCHES MAY COST MONEY ────────────────────────────────
+# Every result carries `paid: false` and `viewed: true`, and the account has an
+# `overquota` endpoint. J360 sells pay-per-announcement access (~€9 each) on top
+# of subscriptions. Opening a *detail* view is therefore a metered action.
+#
+# `documents.download` and detail enrichment are consequently DISABLED, and
+# `max_pages` is small. Do not enable them without confirming your plan's terms
+# — an overnight schedule that "helpfully" opened every notice could generate a
+# four-figure bill.
+#
+# The list endpoint used here returns enough to detect and rank an opportunity
+# (title, buyer, dates, source, search-highlight snippets). A human then opens
+# the ones worth paying for, deliberately, in J360's own UI.
+#
+# ── ⚠ J360 RE-PUBLISHES TUNEPS ──────────────────────────────────────────────
+# `source_name` on real results includes "TN - TUNEPS" and "TN - Plateforme des
+# marchés publics" — content we already scrape for free. Two of the three
+# results in the sample capture were the *same* ANCE tender from two portals.
+#
+# Deduplication will collapse those against the free TUNEPS feed, so J360's
+# real marginal value is its INTERNATIONAL coverage (UN, EU, development
+# banks). Prefer saved searches that are not Tunisia-only.
+# =============================================================================
+key: "j360"
+name: "J360 — Agrégateur d'appels d'offres"
+enabled: true
+country: null                # multi-country aggregator
+language: "fr"
+timezone: "Europe/Paris"
+
+strategy: "api"
+
+base_url: "https://app.j360.info"
+
+auth:
+  mode: "browser_session"
+  login_url: "https://app.j360.info/#/login"
+  session_file: null          # defaults to certs/j360-session.json
+  #: Bounded by the REFRESH token's life, not the access token's — the access
+  #: token is renewed automatically below.
+  session_max_age_hours: 8760
+  token_refresh:
+    enabled: true
+    #: Tried in order, and the first one that returns a token is pinned for the
+    #: rest of the run. The connector falls back to the conventional SimpleJWT
+    #: paths after these, so a wrong guess costs one round of 404s rather than
+    #: a failed crawl. `connector.token_refresh_empty` means none of them
+    #: worked — capture the real path from the `renew` request in DevTools.
+    endpoint:
+      - "/api/token/refresh/"
+      - "/api/token/renew/"
+    method: "POST"
+    refresh_cookie: "JWT-refresh"
+    access_cookie: "JWT-access"
+    refresh_body_field: "refresh"
+    access_response_path: "access"
+    #: Renew this many seconds before expiry, so a slow page cannot straddle it.
+    refresh_margin_seconds: 120
+  credentials_env:
+    username: "SMARTTENDER_CONNECTOR_J360_USERNAME"
+    password: "SMARTTENDER_CONNECTOR_J360_PASSWORD"
+
+# Saved searches to crawl. These are curated in J360's own UI — countries,
+# activities (Consulting IT, Développement informatique…), keywords and
+# exclusions — which is far more robust than reconstructing that filter state
+# here, and keeps the criteria where the team already maintains them.
+#
+# The id is the number in the URL: app.j360.info/#/my-monitoring/searches/57549
+saved_searches:
+  - id: 57549
+    name: "MBO_TUN"
+# Add the international ones — that is where J360 earns its keep:
+#  - id: <MBO_AFRIQUE id>
+#    name: "MBO_AFRIQUE"
+
+endpoints:
+  search: "/api/searches/{search_id}/announces"
+
+pagination:
+  # DRF envelope: follow the server's own `next` link rather than rebuilding
+  # parameters. Survives renames and server-side page-size caps.
+  mode: "next_url"
+  next_response_path: "next"
+  page_param: "page"
+  page_size_param: "paginate_by"
+  page_size: 20               # the API's own default
+  start_page: 1
+  # Deliberately small: metered account, and saved searches are curated to be
+  # short. Raise only after confirming the billing terms.
+  max_pages: 5
+  stop_on_empty_page: true
+
+# Sorting by an immutable-ish field keeps deep pagination from drifting as new
+# notices arrive mid-crawl.
+default_query:
+  order_by: "date_limite"
+
+filter_mapping:
+  # The saved search already encodes the criteria, so nothing is pushed down;
+  # anything set in the UI is applied client-side after normalisation.
+  keywords: null
+  country: null
+  sector: null
+  organization: null
+  publication_date_from: null
+  deadline_from: null
+  deadline_to: null
+  budget_min: null
+  status: null
+
+response_mapping:
+  items_path: "results"
+  total_path: "count"
+  item:
+    external_id: "id"
+    title: "title"
+    buyer: "buyer"
+    buyer_country: "buyer_place.country_name"
+    publication_date: "date_publication"
+    deadline: "limit_date"
+    estimated_budget: "amount"
+    procurement_type: "announce_type"
+    status: "announce_category"
+    # J360's own provenance — which portal it scraped this from.
+    source: "source_name"
+    source_website: "source_domain"
+
+filter_values:
+  # J360's announce_type codes, mapped to the platform vocabulary.
+  procurement_type:
+    open: "MC"                      # Marché en cours
+    prior_information_notice: "AP"  # Appel à projets
+    awarded: "RM"                   # Résultat de marché
+
+parsing:
+  date_formats:
+    - "%Y-%m-%dT%H:%M:%S"
+    - "%Y-%m-%dT%H:%M:%S%z"
+    - "%Y-%m-%d"
+  decimal_separator: "."
+  thousands_separator: ","
+  default_currency: "EUR"
+
+required_fields: ["title", "source_url"]
+
+documents:
+  # ⚠ Opening an announcement's documents is a metered action. Leave disabled.
+  download: false
+
+http:
+  robots:
+    enabled: false            # authenticated subscriber API
+  rate_limit:
+    # The session names the account on every request. Volume is what gets
+    # noticed, so this stays deliberately unhurried and single-threaded.
+    requests_per_second: 0.5
+    burst: 1
+    jitter_seconds: [0.5, 1.5]
+  retry:
+    max_attempts: 5
+    initial_backoff_seconds: 2.0
+    backoff_multiplier: 2.0
+    max_backoff_seconds: 60.0
+    # Never retry 401/403 — a lapsed token is fixed by refreshing, which the
+    # connector does explicitly, not by replaying the same request.
+    retry_on_status: [408, 429, 500, 502, 503, 504]
+  concurrency:
+    per_connector: 1
+  headers:
+    Accept: "application/json, text/plain, */*"
+    Accept-Language: "fr-FR,fr;q=0.9,en;q=0.8"
+    Referer: "https://app.j360.info/"
+
+health:
+  min_expected_items: 1
+  max_acceptable_duration_seconds: 600
+  empty_run_alert_threshold: 2

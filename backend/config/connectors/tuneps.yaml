@@ -1,0 +1,116 @@
+# =============================================================================
+# TUNEPS — Tunisia Online E-Procurement System (https://www.tuneps.tn)
+#
+# ✅  PUBLIC LISTING, NO CREDENTIALS NEEDED.
+#
+# The "Avis A.O" listing at /portail/offres is publicly readable — no TUNTRUST
+# certificate required for browsing (a certificate is only needed to *bid*).
+# The page is an Angular single-page app that fetches an (encrypted) API and
+# renders a Material table client-side, so there is no static HTML to scrape
+# and no stable JSON endpoint to call. The connector therefore renders the page
+# in a real browser and reads the table the app produces — exactly what the
+# `dynamic` strategy exists for.
+#
+# The Angular Material column classes (`cdk-column-<field>`) are stable, tied to
+# the app's data model rather than to styling, so these selectors are far more
+# durable than typical CSS. `epBidMasterId` is the portal's own record id and is
+# used as the deduplication key.
+#
+# Verified live: 10 rows/page, columns exactly as below, paginated by a
+# "next page" button (an SPA click, not a URL — see the connector).
+# =============================================================================
+key: "tuneps"
+name: "TUNEPS — Marchés publics tunisiens"
+enabled: true
+country: "Tunisie"
+language: "fr"
+timezone: "Africa/Tunis"
+
+# Angular SPA: the listing only exists after the app's JavaScript runs.
+strategy: "dynamic"
+
+base_url: "https://www.tuneps.tn"
+
+endpoints:
+  # Client-side routes rendered by the SPA.
+  search: "/portail/offres"
+  detail: "/portail/offres/details"
+
+# TUNEPS serves an incomplete certificate chain (missing intermediate), which
+# fails strict verification. It is a government portal on a fixed IP and we only
+# read a public listing, so allowing it here is an acceptable, contained
+# exception — NOT a default. No other connector sets this.
+tls:
+  allow_insecure: true
+
+pagination:
+  # The SPA paginates by clicking a button, not by changing the URL. The
+  # connector drives the Material paginator; these bounds still apply.
+  mode: "spa_paginator"
+  rows_per_page: 10
+  max_pages: 20
+  # Stop once a page repeats rows we have already seen — an incremental run
+  # against a portal that published nothing new then costs one page.
+  stop_after_consecutive_known: 1
+
+selectors:
+  # Guard selector: if the table never renders, the connector raises
+  # SelectorBrokenError and alerts, rather than silently recording zero.
+  list_container: "table"
+  list_item: "table tbody tr.mat-row, table tbody tr"
+  no_results: "td.mat-cell.text-center, div.no-data"
+
+  # Angular Material tags every cell with `cdk-column-<field>`; these names come
+  # straight from the app's data model.
+  item:
+    reference: "td.cdk-column-bidNo"
+    buyer: "td.cdk-column-bidInstNm"
+    publication_date: "td.cdk-column-publicDt"
+    title: "td.cdk-column-bidNmFr"
+    deadline: "td.cdk-column-bdRecvEndDt"
+    external_id: "td.cdk-column-epBidMasterId"
+
+  paginator:
+    # Angular Material paginator controls.
+    next_button: "button.mat-paginator-navigation-next"
+    range_label: ".mat-paginator-range-label"
+    rows_present: "table tbody tr.mat-row"
+
+# The listing is text/JS-rendered; the SPA has already localised everything.
+parsing:
+  date_formats:
+    - "%d/%m/%Y %H:%M"
+    - "%d/%m/%Y"
+  decimal_separator: ","
+  thousands_separator: " "
+  default_currency: "TND"
+
+# Only the two fields the listing guarantees. Budget, sector, CPV and documents
+# live on the detail page and are left for a later enrichment pass.
+required_fields: ["title", "source_url"]
+
+documents:
+  download: false
+
+http:
+  robots:
+    enabled: false          # public portal, but an SPA has no crawlable robots
+  rate_limit:
+    # One rendered page every ~2.5s. Polite for a government portal.
+    requests_per_second: 0.4
+    burst: 1
+    jitter_seconds: [0.5, 1.5]
+  concurrency:
+    per_connector: 1        # one browser page, paginated in sequence
+  browser:
+    headless: true
+    navigation_timeout_ms: 60000
+    # Scripts MUST run (it is an Angular app); images/fonts are not needed.
+    block_resource_types: ["image", "media", "font"]
+    locale: "fr-FR"
+    timezone: "Africa/Tunis"
+
+health:
+  min_expected_items: 1
+  max_acceptable_duration_seconds: 300
+  empty_run_alert_threshold: 3

@@ -1,0 +1,37 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Secrets — only the example is tracked.
+# `.env.example` contains placeholders only and is the onboarding template, so
+# it stays in version control. `.env` holds the real values and never does.
+.env
+.env.local
+.env.*.local
+
+# Downloaded ONNX model files.
+models/
+
+data/
+logs/
+*.log
+
+.idea/
+.vscode/
+.DS_Store
+
+# TLS client certificates (TUNTRUST) — never commit these.
+certs/*
+!certs/.gitkeep

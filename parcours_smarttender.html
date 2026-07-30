@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartTender AI — Parcours complet de bout en bout</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0A102B; --panel:#111A3E; --panel-2:#16214C; --line:#27336B;
+  --ink:#EAF0FF; --muted:#9AA8D4;
+  --rose:#FF2D87; --teal:#1BD3BC; --blue:#5B8CFF; --amber:#FFB454; --violet:#A78BFA;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--ink);
+  font-family:'Inter',system-ui,sans-serif;font-size:14px;line-height:1.5;
+  background-image:
+    radial-gradient(1100px 480px at 88% -8%, rgba(255,45,135,.10), transparent 60%),
+    radial-gradient(900px 480px at -8% 12%, rgba(27,211,188,.08), transparent 55%);
+}
+.wrap{max-width:1280px;margin:0 auto;padding:44px 26px 120px}
+h1,h2{font-family:'Space Grotesk','Inter',sans-serif}
+.mono{font-family:'JetBrains Mono',monospace}
+
+header{margin-bottom:36px}
+.kicker{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.kicker .dot{width:10px;height:10px;background:var(--rose);border-radius:2px;box-shadow:0 0 14px rgba(255,45,135,.8)}
+.kicker span{font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+h1{font-size:clamp(26px,3.8vw,44px);font-weight:700;letter-spacing:-.02em;line-height:1.08}
+h1 em{font-style:normal;color:var(--teal)}
+.sub{margin-top:14px;max-width:820px;color:var(--muted);font-size:15px}
+.legend{display:flex;flex-wrap:wrap;gap:9px;margin-top:22px}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.02);font-size:12px;color:var(--muted)}
+.chip i{width:10px;height:10px;border-radius:3px}
+.chip i.dash{background:transparent;border:2px dashed var(--muted);width:14px;height:0;border-radius:0;border-bottom:none;border-left:none;border-right:none}
+.i-teal{background:var(--teal)}.i-rose{background:var(--rose)}.i-blue{background:var(--blue)}.i-amber{background:var(--amber)}.i-violet{background:var(--violet)}
+
+/* ------- canevas du graphe ------- */
+#board{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px 22px 34px;overflow-x:auto}
+#canvas{position:relative;min-width:1080px}
+#grid{display:grid;grid-template-columns:repeat(12,1fr);gap:34px 16px;position:relative;z-index:2}
+#edges{position:absolute;inset:0;z-index:1;pointer-events:none;overflow:visible}
+
+.phase{grid-column:1/-1;display:flex;align-items:center;gap:14px;margin-top:10px}
+.phase .tag{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--rose);border:1px solid rgba(255,45,135,.4);border-radius:6px;padding:4px 10px;background:rgba(255,45,135,.06);white-space:nowrap}
+.phase h2{font-size:16.5px;font-weight:600;letter-spacing:.01em}
+.phase .rule{flex:1;height:1px;background:var(--line)}
+.phase small{color:var(--muted);font-size:11.5px;max-width:340px;text-align:right}
+
+.node{background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:10px;padding:11px 13px;position:relative;z-index:2}
+.node b{display:block;font-size:13px;font-weight:600;line-height:1.35}
+.node small{display:block;margin-top:4px;font-size:11.5px;color:var(--muted);line-height:1.45}
+.node .st{display:inline-block;margin-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.14em;color:var(--teal);background:rgba(27,211,188,.08);border:1px solid rgba(27,211,188,.25);border-radius:4px;padding:1px 7px}
+.node.rose{border-left-color:var(--rose)} .node.rose .st{color:var(--rose);background:rgba(255,45,135,.08);border-color:rgba(255,45,135,.3)}
+.node.blue{border-left-color:var(--blue)} .node.blue .st{color:var(--blue);background:rgba(91,140,255,.08);border-color:rgba(91,140,255,.3)}
+.node.amber{border-left-color:var(--amber)} .node.amber .st{color:var(--amber);background:rgba(255,180,84,.09);border-color:rgba(255,180,84,.3)}
+.node.violet{border-left-color:var(--violet)} .node.violet .st{color:var(--violet);background:rgba(167,139,250,.09);border-color:rgba(167,139,250,.3)}
+.node.ghost{opacity:.92;border-style:solid;background:rgba(22,33,76,.6)}
+
+.decision{border:1.5px dashed var(--violet);border-left:1.5px dashed var(--violet);background:rgba(167,139,250,.06);text-align:center}
+.decision b{color:var(--violet)}
+.decision .st{color:var(--violet);background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.35)}
+.decision.amber{border-color:rgba(255,180,84,.6);background:rgba(255,180,84,.05)}
+.decision.amber b{color:var(--amber)}
+
+.terminal{border:1.5px solid var(--teal);border-left:3px solid var(--teal);background:rgba(27,211,188,.07);text-align:center}
+.terminal b{color:var(--teal)}
+
+.edge-lbl{font-family:'JetBrains Mono',monospace;font-size:10px;fill:var(--muted);paint-order:stroke;stroke:#111A3E;stroke-width:5px;stroke-linejoin:round}
+.caption{margin-top:18px;font-size:12.5px;color:var(--muted);border-left:2px solid var(--line);padding-left:12px}
+.caption b{color:var(--ink)}
+.transverse{margin-top:26px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:900px){.transverse{grid-template-columns:1fr}}
+.dashflow{stroke-dasharray:6 7;animation:dash 1.5s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-13}}
+@media (prefers-reduced-motion:reduce){.dashflow{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker"><span class="dot"></span><span>SmartTender AI · Parcours fonctionnel exhaustif · v1.0</span></div>
+  <h1>Le cycle de vie complet — <em>de la première connexion au dernier document généré</em></h1>
+  <p class="sub">Graphe chronologique relié de bout en bout : chaque fonctionnalité, chaque décision, chaque bifurcation possible — chemins d'erreur, escalades LLM, boucles de validation, rejets, reprises et boucle d'apprentissage continu.</p>
+  <div class="legend">
+    <span class="chip"><i class="i-teal"></i>Traitement déterministe / ML léger</span>
+    <span class="chip"><i class="i-violet"></i>Décision / hybride LLM</span>
+    <span class="chip"><i class="i-amber"></i>Humain dans la boucle · sécurité</span>
+    <span class="chip"><i class="i-rose"></i>Chemin alternatif · sortie / rejet</span>
+    <span class="chip"><i class="i-blue"></i>Données · référentiels</span>
+    <span class="chip"><i class="dash"></i>Flux de fond (config, apprentissage, RAG)</span>
+  </div>
+</header>
+
+<div id="board">
+<div id="canvas">
+<svg id="edges" aria-hidden="true"></svg>
+<div id="grid">
+
+  <!-- ═══════ PHASE 0 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 0</span><h2>Accès &amp; identité</h2><div class="rule"></div><small>Passerelle Nginx : TLS 1.3, limitation de débit, en-têtes de sécurité — sur chaque requête du parcours.</small></div>
+
+  <div class="node" id="n0" style="grid-column:5/9"><span class="st">DÉBUT</span><b>Première interaction — l'utilisateur ouvre la plateforme</b><small>Navigateur → HTTPS → passerelle unique (seul port publié)</small></div>
+
+  <div class="node decision" id="dLogin" style="grid-column:5/9"><span class="st">DÉCISION</span><b>Identifiants valides&nbsp;?</b><small>Mot de passe vérifié (Argon2id)</small></div>
+  <div class="node rose" id="nLock" style="grid-column:10/13"><span class="st">CHEMIN D'ERREUR</span><b>Échec journalisé</b><small>Limitation des tentatives · verrouillage après N échecs · retour à la connexion</small></div>
+
+  <div class="node amber" id="nSess" style="grid-column:5/9"><span class="st">SESSION</span><b>JWT 15 min + rôle attribué</b><small>admin · commercial · RH / skill manager · validateur · lecteur — chaque écran et chaque action filtrés par RBAC</small></div>
+  <div class="node amber ghost" id="nAdmin" style="grid-column:10/13"><span class="st">EN PARALLÈLE · ADMIN</span><b>Console d'administration</b><small>Utilisateurs &amp; rôles · sources de veille · poids de scoring · gabarits bailleurs · statistiques · supervision des traitements</small></div>
+
+  <!-- ═══════ PHASE 1 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 1</span><h2>Détection des opportunités — deux portes d'entrée</h2><div class="rule"></div><small>Module 1 · Veille stratégique : le système travaille même quand personne n'est connecté.</small></div>
+
+  <div class="node" id="nScrape" style="grid-column:1/5"><span class="st">ENTRÉE A · AUTOMATIQUE</span><b>Scraping planifié multi-sources</b><small>Celery Beat (ex. toutes les 2 h) · Tuneps, DgMarket, portails ministériels · connecteur isolé par source · alerte si échec</small></div>
+  <div class="node" id="nUpload" style="grid-column:5/9"><span class="st">ENTRÉE B · MANUELLE</span><b>Upload d'un AO par l'utilisateur</b><small>PDF / DOCX / HTML — glisser-déposer depuis l'interface</small></div>
+  <div class="node rose" id="nUpErr" style="grid-column:10/13"><span class="st">CHEMIN D'ERREUR</span><b>Fichier refusé</b><small>Type MIME réel non autorisé, taille &gt; 25 Mo ou contenu suspect → message explicite, rien n'entre dans le pipeline</small></div>
+
+  <div class="node decision" id="dDedup" style="grid-column:1/5"><span class="st">DÉCISION</span><b>Doublon détecté&nbsp;?</b><small>URL canonique + hash + quasi-doublon sémantique</small></div>
+  <div class="node rose" id="nDiscard" style="grid-column:1/5;grid-row:span 1"><span class="st">SORTIE</span><b>Écarté &amp; journalisé</b><small>Le doublon n'encombre jamais le tableau de bord</small></div>
+
+  <div class="node blue" id="nIngest" style="grid-column:5/9"><span class="st">INGESTION</span><b>ID unique AO/AMI + horodatage</b><small>Stockage MinIO chiffré · mise en file asynchrone (l'interface n'attend jamais) · l'ID pilote tout l'aval : scoring &amp; formatage</small></div>
+  <div class="node amber ghost" id="nNotif" style="grid-column:10/13"><span class="st">TEMPS RÉEL</span><b>Notification « nouvel AO »</b><small>In-app + email aux équipes concernées, filtrée par secteur d'intérêt</small></div>
+
+  <!-- ═══════ PHASE 2 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 2</span><h2>Compréhension documentaire — pipeline d'analyse</h2><div class="rule"></div><small>Objectif de performance : analyse complète d'un AO &lt; 60 secondes.</small></div>
+
+  <div class="node decision" id="dScan" style="grid-column:5/9"><span class="st">DÉCISION</span><b>Document scanné / image&nbsp;?</b></div>
+  <div class="node" id="nOCR" style="grid-column:1/5"><span class="st">VISION PAR ORDINATEUR</span><b>OCR de repli</b><small>Pré-traitement OpenCV (redressement, binarisation) + Tesseract fra/eng — 100 % local, photos jamais analysées</small></div>
+
+  <div class="node" id="nClean" style="grid-column:5/9"><span class="st">NETTOYAGE</span><b>Normalisation &amp; découpage</b><small>Encodage · en-têtes/pieds répétés · artefacts OCR · découpage en sections logiques (chunking)</small></div>
+
+  <div class="node decision" id="dFormat" style="grid-column:5/9"><span class="st">DÉCISION · ROUTEUR</span><b>Format bailleur connu&nbsp;?</b><small>Score de confiance calculé par l'orchestrateur</small></div>
+
+  <div class="node" id="nRules" style="grid-column:1/5"><span class="st">CHEMIN DÉTERMINISTE</span><b>Extraction par grilles + NER</b><small>Regex (dates, montants, références) · spaCy fr (organisations, lieux) · grille pré-paramétrée du bailleur — gratuit, instantané, auditable</small></div>
+  <div class="node violet" id="nLLMx" style="grid-column:9/13"><span class="st">ESCALADE LLM</span><b>Extraction par LLM local</b><small>Ollama · Mistral 7B — sortie JSON contrainte (Pydantic) · budget de jetons plafonné · décision journalisée</small></div>
+
+  <div class="node decision" id="dSchema" style="grid-column:9/13"><span class="st">DÉCISION</span><b>Sortie conforme au schéma&nbsp;?</b><small>1 nouvelle tentative maximum</small></div>
+  <div class="node amber" id="nHumanX" style="grid-column:9/13"><span class="st">FILET HUMAIN</span><b>Revue manuelle de l'extraction</b><small>L'injection de prompt ne peut jamais modifier le comportement du système — au pire, un humain corrige du texte</small></div>
+
+  <div class="node blue" id="nFields" style="grid-column:5/9"><span class="st">PERSISTANCE</span><b>Champs structurés enregistrés</b><small>Dates · budget · pays · secteur · bailleur · compétences requises · critères d'éligibilité + résumé automatique</small></div>
+
+  <div class="node" id="nEmbed" style="grid-column:5/9"><span class="st">VECTORISATION</span><b>Embeddings + indexation Qdrant</b><small>MiniLM (ONNX/CPU) · clé = ID unique · métadonnées filtrables (secteur, langue) — jamais de texte brut de CV dans l'index</small></div>
+  <div class="node ghost" id="nClassif" style="grid-column:10/13"><span class="st">CLASSIFICATION</span><b>Secteur + tableau de bord</b><small>Similarité aux prototypes de secteurs · l'AO apparaît qualifié, filtrable et daté dans le dashboard de veille</small></div>
+
+  <!-- ═══════ PHASE 3 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 3</span><h2>Qualification humaine — premier contrôle</h2><div class="rule"></div><small>Human-in-the-loop n°1 : aucune boucle d'IA coûteuse ne se déclenche sans décision humaine.</small></div>
+
+  <div class="node decision amber" id="dGo" style="grid-column:5/9"><span class="st">DÉCISION HUMAINE</span><b>Go / No-Go du commercial&nbsp;?</b><small>Consultation du dashboard · filtres secteur / pays / échéance / budget</small></div>
+  <div class="node rose" id="nNoGo" style="grid-column:10/13"><span class="st">SORTIE</span><b>AO archivé (No-Go)</b><small>Motif tracé · reste consultable · alimente les statistiques de veille</small></div>
+
+  <!-- ═══════ PHASE 4 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 4</span><h2>CV Matching — scoring hybride explicable</h2><div class="rule"></div><small>Objectifs : matching &lt; 30 s · recherche consultant &lt; 5 s · plusieurs centaines de CV.</small></div>
+
+  <div class="node blue ghost" id="nRH" style="grid-column:1/5"><span class="st">EN PARALLÈLE · RH</span><b>Référentiel de compétences</b><small>Import &amp; mise à jour des CV · certifications · disponibilités · versionnement · recherche multicritère — vectorisé une seule fois puis mis en cache</small></div>
+  <div class="node" id="nCache" style="grid-column:5/9"><span class="st">FRUGALITÉ</span><b>Cache d'embeddings CV</b><small>Seul le nouvel AO est vectorisé à chaque exécution — coût marginal quasi nul</small></div>
+
+  <div class="node" id="nSearch" style="grid-column:5/9"><span class="st">RECHERCHE</span><b>Top-k sémantique filtré</b><small>Qdrant ANN (millisecondes) · filtres : secteur, langue, disponibilité · « expert Cloud AWS » ≈ « Spécialiste Amazon Web Services »</small></div>
+
+  <div class="node decision" id="dGate" style="grid-column:5/9"><span class="st">VERROU STRICT</span><b>Mots-clés obligatoires présents&nbsp;?</b><small>Technologies indispensables extraites de l'AO</small></div>
+  <div class="node rose" id="nZero" style="grid-column:1/5"><span class="st">DÉCLASSEMENT</span><b>Score = 0</b><small>Un CV « littéraire » sans les compétences exigées s'effondre automatiquement — anti-biais du cahier des charges</small></div>
+
+  <div class="node" id="nScore" style="grid-column:5/9"><span class="st">CALCUL</span><b>Score global pondéré</b><small>Cosinus sémantique + recouvrement de mots-clés + pondération métier (ex. 40 % expérience, 20 % langues) — poids versionnés, scores reproductibles</small></div>
+
+  <div class="node violet" id="nJustif" style="grid-column:5/9"><span class="st">EXPLICABILITÉ</span><b>Justification par profil</b><small>Preuve structurée (mots-clés trouvés, sections concordantes, détail des poids) · le LLM local ne fait que la <em>formuler</em> — ancrage total, zéro invention</small></div>
+
+  <div class="node decision amber" id="dSatisf" style="grid-column:5/9"><span class="st">DÉCISION HUMAINE</span><b>Classement satisfaisant&nbsp;?</b></div>
+  <div class="node amber" id="nWeights" style="grid-column:10/13"><span class="st">BOUCLE D'AJUSTEMENT</span><b>Réglage des poids</b><small>Pondérations modifiées (admin/commercial) → relance instantanée du matching · chaque configuration versionnée</small></div>
+
+  <div class="node" id="nSelect" style="grid-column:5/9"><span class="st">SÉLECTION</span><b>Profils retenus + export du classement</b><small>Shortlist validée par l'humain · export possible vers GED / dossier AO dès cette étape</small></div>
+
+  <!-- ═══════ PHASE 5 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 5</span><h2>Génération documentaire — Module 3</h2><div class="rule"></div><small>Objectif : génération d'un CV adapté &lt; 15 secondes · gabarits = données (.docx), extensibles sans redéploiement.</small></div>
+
+  <div class="node decision" id="dTpl" style="grid-column:5/9"><span class="st">DÉCISION</span><b>Gabarit bailleur disponible&nbsp;?</b><small>BEI · BAD · Bureau d'Études · autres formats imposés</small></div>
+  <div class="node amber" id="nAddTpl" style="grid-column:10/13"><span class="st">BOUCLE ADMIN</span><b>Ajout d'un gabarit .docx</b><small>Le Bureau d'Études étend la bibliothèque lui-même — c'est une donnée, pas du code</small></div>
+
+  <div class="node" id="nFill" style="grid-column:5/9"><span class="st">DÉTERMINISTE</span><b>Remplissage des sections standardisées</b><small>docxtpl / Jinja2 : CV adaptés au bailleur · fiches experts · formulaires TECH / FIN · matrices de conformité · lettres d'accompagnement</small></div>
+
+  <div class="node blue ghost" id="nRAGsrc" style="grid-column:1/5"><span class="st">RÉFÉRENTIEL RAG</span><b>Réponses passées validées</b><small>Collection Qdrant dédiée — style et faits éprouvés, récupérés par similarité avec l'AO courant</small></div>
+  <div class="node violet" id="nRAG" style="grid-column:5/9"><span class="st">HYBRIDE · LLM ANCRÉ</span><b>Rédaction des sections libres</b><small>Fiches projet · argumentaires — prompt construit <em>exclusivement</em> à partir des CV réels + réponses passées récupérées · jetons plafonnés · le LLM n'invente jamais une compétence</small></div>
+
+  <div class="node decision" id="dQA" style="grid-column:5/9"><span class="st">CONTRÔLE AUTO</span><b>QA automatique conforme&nbsp;?</b><small>Complétude · conformité au format bailleur · cohérence des données · absence de fragments de prompt</small></div>
+  <div class="node rose" id="nFix" style="grid-column:1/5"><span class="st">BOUCLE DE CORRECTION</span><b>Régénération ciblée</b><small>Seules les sections en échec sont reprises — pas de régénération totale coûteuse</small></div>
+
+  <div class="node" id="nDraft" style="grid-column:5/9"><span class="st">VERSION 1</span><b>Première version du dossier AO</b><small>Filigrane « généré — en attente de validation » · enregistrée, versionnée, diffable</small></div>
+
+  <!-- ═══════ PHASE 6 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 6</span><h2>Validation humaine — le verrou final</h2><div class="rule"></div><small>Human-in-the-loop n°2 : rien ne sort de la plateforme sans approbation explicite et tracée.</small></div>
+
+  <div class="node amber" id="nReview" style="grid-column:5/9"><span class="st">WORKFLOW</span><b>Revue collaborative</b><small>État « en revue » · commentaires · éditions tracées · relecture croisée commercial / expert technique</small></div>
+
+  <div class="node decision amber" id="dApprove" style="grid-column:5/9"><span class="st">DÉCISION HUMAINE</span><b>Décision du validateur&nbsp;?</b><small>Trois issues possibles</small></div>
+  <div class="node" id="nEdit" style="grid-column:1/5"><span class="st">ISSUE 2 · RETOUCHE</span><b>Modifications demandées</b><small>Édition directe → nouvelle version (diff conservé) → nouvelle relecture</small></div>
+  <div class="node rose" id="nReject" style="grid-column:10/13"><span class="st">ISSUE 3 · REJET</span><b>Rejet motivé</b><small>Motif journalisé · relance possible de la génération avec consignes — ou clôture définitive tracée</small></div>
+
+  <div class="node amber" id="nSign" style="grid-column:5/9"><span class="st">ISSUE 1 · APPROBATION</span><b>Approbation finale</b><small>Signature de l'utilisateur habilité — la responsabilité reste humaine, conformément au principe directeur</small></div>
+
+  <!-- ═══════ PHASE 7 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 7</span><h2>Export, archivage &amp; traçabilité</h2><div class="rule"></div><small>Le livrable final — dernier document généré du cycle — et sa mémoire complète.</small></div>
+
+  <div class="node" id="nExport" style="grid-column:5/9"><span class="st">LIVRAISON</span><b>Export du dossier final</b><small>GED / dossier AO · téléchargement par URL signée à durée limitée · filigrane retiré · notification à l'équipe</small></div>
+  <div class="node amber ghost" id="nAudit" style="grid-column:10/13"><span class="st">TRANSVERSE</span><b>Journal d'audit complet</b><small>Qui · quoi · quand · poids utilisés · version du modèle · jetons consommés — append-only, requêtable de bout en bout</small></div>
+
+  <div class="node blue" id="nArchive" style="grid-column:5/9"><span class="st">CAPITALISATION</span><b>Archivage au référentiel</b><small>Document + scores + décisions + versions · la réponse validée rejoint la collection « réponses passées »</small></div>
+
+  <!-- ═══════ PHASE 8 ═══════ -->
+  <div class="phase"><span class="tag">PHASE 8</span><h2>Apprentissage continu — la boucle qui remonte le temps</h2><div class="rule"></div><small>Domaine 7 du cahier des charges : chaque cycle rend le suivant meilleur, sans réentraînement risqué.</small></div>
+
+  <div class="node" id="nFeedback" style="grid-column:5/9"><span class="st">COLLECTE</span><b>Capture du feedback</b><small>Validations · corrections · rejets · sélections — chaque décision humaine devient une donnée étiquetée</small></div>
+
+  <div class="node violet" id="nLearn" style="grid-column:5/9"><span class="st">JOBS PLANIFIÉS</span><b>Amélioration périodique</b><small>Suggestions de poids de scoring (suivies dans MLflow, réversibles) · mise à jour du dictionnaire de synonymes / compétences · rafraîchissement des prototypes de secteurs</small></div>
+
+  <div class="node terminal" id="nEnd" style="grid-column:5/9"><span class="st">FIN DU CYCLE</span><b>Dossier soumis — plateforme plus intelligente au prochain AO</b><small>Temps de traitement : de plusieurs jours à quelques minutes, humain aux commandes à chaque verrou</small></div>
+
+</div><!-- /grid -->
+</div><!-- /canvas -->
+
+<p class="caption"><b>Garanties transverses actives sur chaque flèche du graphe :</b> passerelle TLS + limitation de débit sur toute requête · RBAC vérifié par endpoint et par objet · chiffrement au repos (pgcrypto, MinIO SSE) · supervision Prometheus/Grafana (SLO, taux d'escalade LLM, budget de jetons, échecs de scraping) · sauvegardes chiffrées nocturnes avec restauration testée · souveraineté : CV, photos et AO ne quittent jamais le serveur (RGPD / INPDP).</p>
+
+<div class="transverse">
+  <div class="node amber"><span class="st">SI INCIDENT TECHNIQUE</span><b>Reprise automatique</b><small>Toute étape du pipeline est idempotente : Celery rejoue la tâche après une panne, sans doublon ni perte — exigence de fiabilité du cahier des charges.</small></div>
+  <div class="node amber"><span class="st">SI DOCUMENT MALVEILLANT</span><b>Confinement par conception</b><small>Contenu scrapé/uploadé = données, jamais des instructions · LLM sans outils ni réseau · sorties contraintes par schéma → une injection de prompt ne peut produire, au pire, que du texte rejeté.</small></div>
+  <div class="node amber"><span class="st">SI ÉCHÉANCE PROCHE</span><b>Alerte de délai</b><small>Les dates limites extraites en Phase 2 déclenchent des rappels automatiques — le facteur temps critique identifié dans l'analyse de l'existant.</small></div>
+</div>
+</div><!-- /board -->
+
+<footer style="margin-top:60px;border-top:1px solid var(--line);padding-top:22px;display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between">
+  <span class="mono" style="font-size:11px;color:var(--muted);letter-spacing:.12em">SMARTTENDER AI · PARCOURS FONCTIONNEL DE BOUT EN BOUT · v1.0</span>
+  <span class="mono" style="font-size:11px;color:var(--muted)">2 entrées · 9 décisions · 6 boucles · 4 chemins d'erreur · 2 verrous humains · 1 boucle d'apprentissage</span>
+</footer>
+</div><!-- /wrap -->
+
+<script>
+(function(){
+  const canvas=document.getElementById('canvas'), svg=document.getElementById('edges');
+  const C={g:'#6C7BB8',teal:'#1BD3BC',rose:'#FF2D87',amber:'#FFB454',violet:'#A78BFA',blue:'#5B8CFF'};
+  // {f,t,r:route, l:label, c:color, d:dashed, i:inset, p:label position 0..1}
+  const E=[
+    // PHASE 0
+    {f:'n0',t:'dLogin',r:'v'},
+    {f:'dLogin',t:'nLock',r:'h',l:'non',c:'rose'},
+    {f:'nLock',t:'dLogin',r:'hlow',l:'nouvelle tentative',c:'rose',d:1},
+    {f:'dLogin',t:'nSess',r:'v',l:'oui',c:'teal'},
+    {f:'nSess',t:'nAdmin',r:'h',l:'si rôle admin',c:'amber',d:1},
+    {f:'nAdmin',t:'nScrape',r:'v',l:'configure les sources',c:'amber',d:1,p:.35},
+    {f:'nSess',t:'nUpload',r:'v'},
+    // PHASE 1
+    {f:'nScrape',t:'dDedup',r:'v',l:'nouveau document'},
+    {f:'dDedup',t:'nDiscard',r:'v',l:'oui — doublon',c:'rose'},
+    {f:'dDedup',t:'nIngest',r:'v',l:'non — unique',c:'teal',p:.6},
+    {f:'nUpload',t:'nUpErr',r:'h',l:'invalide',c:'rose'},
+    {f:'nUpload',t:'nIngest',r:'v',l:'contrôles OK',c:'teal'},
+    {f:'nIngest',t:'nNotif',r:'h',l:'diffusion',c:'amber',d:1},
+    {f:'nIngest',t:'dScan',r:'v'},
+    // PHASE 2
+    {f:'dScan',t:'nOCR',r:'v',l:'oui — scan',c:'amber'},
+    {f:'nOCR',t:'nClean',r:'h',l:'texte océrisé'},
+    {f:'dScan',t:'nClean',r:'v',l:'non — numérique',c:'teal'},
+    {f:'nClean',t:'dFormat',r:'v'},
+    {f:'dFormat',t:'nRules',r:'v',l:'oui — grille connue',c:'teal'},
+    {f:'dFormat',t:'nLLMx',r:'v',l:'non — escalade',c:'violet'},
+    {f:'nLLMx',t:'dSchema',r:'v'},
+    {f:'dSchema',t:'nHumanX',r:'v',l:'non ×2',c:'rose'},
+    {f:'dSchema',t:'nFields',r:'v',l:'oui — JSON valide',c:'teal',p:.55},
+    {f:'nHumanX',t:'nFields',r:'v',l:'corrigé',c:'amber',d:1,p:.6},
+    {f:'nRules',t:'nFields',r:'v',l:'champs extraits',c:'teal',p:.55},
+    {f:'nFields',t:'nEmbed',r:'v'},
+    {f:'nEmbed',t:'nClassif',r:'h',l:'MAJ dashboard',c:'blue',d:1},
+    {f:'nEmbed',t:'dGo',r:'v'},
+    // PHASE 3
+    {f:'dGo',t:'nNoGo',r:'h',l:'No-Go',c:'rose'},
+    {f:'dGo',t:'nCache',r:'v',l:'Go — matching',c:'teal'},
+    // PHASE 4
+    {f:'nRH',t:'nCache',r:'h',l:'CV vectorisés 1×',c:'blue',d:1},
+    {f:'nCache',t:'nSearch',r:'v'},
+    {f:'nSearch',t:'dGate',r:'v'},
+    {f:'dGate',t:'nZero',r:'v',l:'non — verrou',c:'rose'},
+    {f:'dGate',t:'nScore',r:'v',l:'oui',c:'teal',p:.6},
+    {f:'nScore',t:'nJustif',r:'v'},
+    {f:'nJustif',t:'dSatisf',r:'v'},
+    {f:'dSatisf',t:'nWeights',r:'h',l:'non — ajuster',c:'amber'},
+    {f:'nWeights',t:'nSearch',r:'loopR',l:'relance du matching',c:'amber',d:1},
+    {f:'dSatisf',t:'nSelect',r:'v',l:'oui',c:'teal'},
+    {f:'nSelect',t:'dTpl',r:'v'},
+    // PHASE 5
+    {f:'dTpl',t:'nAddTpl',r:'h',l:'non',c:'amber'},
+    {f:'nAddTpl',t:'dTpl',r:'hlow',l:'gabarit ajouté',c:'amber',d:1},
+    {f:'dTpl',t:'nFill',r:'v',l:'oui',c:'teal'},
+    {f:'nFill',t:'nRAG',r:'v'},
+    {f:'nRAGsrc',t:'nRAG',r:'h',l:'contexte récupéré',c:'blue',d:1},
+    {f:'nRAG',t:'dQA',r:'v'},
+    {f:'dQA',t:'nFix',r:'v',l:'non',c:'rose'},
+    {f:'nFix',t:'nFill',r:'loopL',l:'reprise ciblée',c:'rose',d:1},
+    {f:'dQA',t:'nDraft',r:'v',l:'oui',c:'teal',p:.6},
+    // PHASE 6
+    {f:'nDraft',t:'nReview',r:'v'},
+    {f:'nReview',t:'dApprove',r:'v'},
+    {f:'dApprove',t:'nEdit',r:'v',l:'modifications',c:'amber'},
+    {f:'nEdit',t:'nReview',r:'loopL',l:'nouvelle version → relecture',c:'amber',d:1,i:1},
+    {f:'dApprove',t:'nReject',r:'h',l:'rejet',c:'rose'},
+    {f:'nReject',t:'nFill',r:'loopR',l:'régénérer avec consignes',c:'rose',d:1,i:1},
+    {f:'dApprove',t:'nSign',r:'v',l:'approuvé',c:'teal',p:.6},
+    // PHASE 7
+    {f:'nSign',t:'nExport',r:'v'},
+    {f:'nExport',t:'nAudit',r:'h',l:'tout est tracé',c:'amber',d:1},
+    {f:'nExport',t:'nArchive',r:'v'},
+    {f:'nArchive',t:'nRAGsrc',r:'loopL',l:'enrichit le RAG futur',c:'blue',d:1,i:2},
+    // PHASE 8
+    {f:'nArchive',t:'nFeedback',r:'v'},
+    {f:'nFeedback',t:'nLearn',r:'v'},
+    {f:'nLearn',t:'nScore',r:'loopR',l:'améliore le scoring',c:'violet',d:1,i:2},
+    {f:'nLearn',t:'nRules',r:'loopL',l:'enrichit grilles & synonymes',c:'violet',d:1,i:3},
+    {f:'nLearn',t:'nEnd',r:'v'}
+  ];
+  const NS='http://www.w3.org/2000/svg';
+  function el(n,a){const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;}
+  function R(id,cb){const r=document.getElementById(id).getBoundingClientRect();
+    return {x:r.left-cb.left,y:r.top-cb.top,w:r.width,h:r.height,
+            cx:r.left-cb.left+r.width/2,cy:r.top-cb.top+r.height/2};}
+  function draw(){
+    const cb=canvas.getBoundingClientRect();
+    const W=canvas.scrollWidth,H=canvas.scrollHeight;
+    svg.setAttribute('width',W);svg.setAttribute('height',H);
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    while(svg.firstChild)svg.removeChild(svg.firstChild);
+    const defs=el('defs',{});
+    Object.entries(C).forEach(([k,col])=>{
+      const m=el('marker',{id:'arr-'+k,viewBox:'0 0 10 10',refX:'9',refY:'5',
+        markerWidth:'7',markerHeight:'7',orient:'auto-start-reverse'});
+      m.appendChild(el('path',{d:'M0,0 L10,5 L0,10 z',fill:col}));
+      defs.appendChild(m);
+    });
+    svg.appendChild(defs);
+    E.forEach(e=>{
+      const a=R(e.f,cb),b=R(e.t,cb),col=C[e.c||'g'];let d='';
+      if(e.r==='v'){
+        const sx=a.cx,sy=a.y+a.h,ex=b.cx,ey=b.y;
+        const k=Math.max(26,Math.min(70,(ey-sy)/2));
+        d=`M ${sx} ${sy} C ${sx} ${sy+k}, ${ex} ${ey-k}, ${ex} ${ey}`;
+      }else if(e.r==='h'||e.r==='hlow'){
+        let sx,ex,sy=a.cy,ey=b.cy;
+        if(b.cx>a.cx){sx=a.x+a.w;ex=b.x;}else{sx=a.x;ex=b.x+b.w;}
+        const bow=e.r==='hlow'?54:0, k=(ex-sx)/2.2;
+        if(e.r==='hlow'){sy=a.y+a.h;ey=b.y+b.h;
+          d=`M ${sx+ (b.cx>a.cx? -a.w/2+a.w/2 :0)} ${sy}`;
+          const mx=(a.cx+b.cx)/2;
+          d=`M ${a.cx} ${sy} C ${a.cx} ${sy+bow}, ${b.cx} ${ey+bow}, ${b.cx} ${ey}`;
+        }else{
+          d=`M ${sx} ${sy} C ${sx+k} ${sy}, ${ex-k} ${ey}, ${ex} ${ey}`;
+        }
+      }else if(e.r==='loopR'||e.r==='loopL'){
+        const inset=(e.i||0)*16, right=e.r==='loopR';
+        const xm=right? W-18-inset : 18+inset;
+        const sy=a.cy, ey=b.cy;
+        const sx=right? a.x+a.w : a.x;
+        const ex=right? b.x+b.w : b.x;
+        const vdir=ey>sy?1:-1, q=12;
+        d=`M ${sx} ${sy} L ${xm+(right?-q:q)} ${sy} Q ${xm} ${sy} ${xm} ${sy+q*vdir} `+
+          `L ${xm} ${ey-q*vdir} Q ${xm} ${ey} ${xm+(right?-q:q)} ${ey} L ${ex} ${ey}`;
+      }
+      const p=el('path',{d:d,fill:'none',stroke:col,'stroke-width':e.d?1.6:2,
+        'marker-end':'url(#arr-'+(e.c||'g')+')'});
+      if(e.d)p.setAttribute('class','dashflow');
+      svg.appendChild(p);
+      if(e.l){
+        const len=p.getTotalLength(),pt=p.getPointAtLength(len*(e.p!=null?e.p:0.5));
+        const t=el('text',{x:pt.x,y:pt.y-7,'text-anchor':'middle','class':'edge-lbl'});
+        t.textContent=e.l;t.style.fill=col;svg.appendChild(t);
+      }
+    });
+  }
+  const rd=()=>requestAnimationFrame(draw);
+  window.addEventListener('load',rd);
+  window.addEventListener('resize',rd);
+  if(document.fonts&&document.fonts.ready)document.fonts.ready.then(rd);
+  setTimeout(rd,300);setTimeout(rd,1200);
+})();
+</script>
+</body>
+</html>

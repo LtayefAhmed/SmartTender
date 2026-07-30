@@ -1,0 +1,156 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smarttender-ingestion"
+version = "1.0.0"
+description = "SmartTender AI - Module 1: resilient multi-source tender detection and ingestion platform"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+
+dependencies = [
+    # --- API layer -------------------------------------------------------
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "email-validator>=2.1",
+
+    # --- Persistence -----------------------------------------------------
+    "SQLAlchemy>=2.0.29",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    "asyncpg>=0.29",
+
+    # --- Async processing ------------------------------------------------
+    "celery[redis]>=5.3",
+    "redis>=5.0",
+    "flower>=2.0",
+
+    # --- Object storage --------------------------------------------------
+    "minio>=7.2",
+
+    # --- HTTP / scraping -------------------------------------------------
+    "httpx[http2]>=0.27",
+    "tenacity>=8.2",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.1",
+    "playwright>=1.42",
+    "python-dateutil>=2.9",
+
+    # --- Observability ---------------------------------------------------
+    "structlog>=24.1",
+    "prometheus-client>=0.20",
+
+    # --- Document text extraction ----------------------------------------
+    # Digital text extraction is a core capability, not an optional extra:
+    # without it, over half the scoring weight evaluates a title alone.
+    # All pure-Python, no system dependencies.
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+
+    # --- OCR fallback for scanned documents -------------------------------
+    # pypdfium2 rasterises without Poppler (works identically on Windows and
+    # in the container) and is BSD/Apache licensed, unlike PyMuPDF's AGPL.
+    # pytesseract needs the `tesseract-ocr` binary, which the image installs;
+    # without it the platform logs a warning and skips OCR rather than failing.
+    "pypdfium2>=4.25",
+    "pytesseract>=0.3.10",
+    "opencv-python-headless>=4.9",
+    "numpy>=1.26",
+    "Pillow>=10.2",
+
+    # --- Config / misc ---------------------------------------------------
+    "PyYAML>=6.0",
+    "orjson>=3.9",
+]
+
+[project.optional-dependencies]
+# Heavy, optional semantic backend. The platform degrades gracefully to the
+# pure-python lexical backend when this is not installed.
+semantic = [
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+    "numpy>=1.26",
+]
+# Optional libmagic escalation for MIME sniffing (the built-in signature
+# sniffer works without it and is the cross-platform default).
+magic = [
+    "python-magic>=0.4.27; sys_platform != 'win32'",
+    "python-magic-bin>=0.4.14; sys_platform == 'win32'",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "respx>=0.21",
+    "freezegun>=1.4",
+    "ruff>=0.3",
+    "mypy>=1.9",
+    "types-PyYAML",
+    "types-python-dateutil",
+]
+
+[project.scripts]
+smarttender-admin = "app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "integration: requires live infrastructure (postgres/redis/minio)",
+    "network: performs real outbound network calls",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    # FastAPI's whole dependency model is function calls in defaults.
+    "B008",
+    # Exception names deliberately read as nouns (ValidationError, not
+    # ValidationException) to match the domain vocabulary.
+    "N818",
+    # Optional lifecycle hooks on BaseConnector (setup/teardown/authenticate)
+    # are intentionally concrete no-ops: a connector implements them only when
+    # it has something to do. Making them abstract would force every connector
+    # to write three empty methods.
+    "B027",
+    # Cleanup paths deliberately swallow exceptions with an explanatory
+    # comment; `contextlib.suppress` hides that comment's subject.
+    "SIM105",
+    # Filter guards in `_client_side_match` are one `if` per criterion on
+    # purpose — collapsing them produces unreadable multi-line conditions.
+    "SIM102",
+    "SIM108",
+    # Non-breaking spaces and typographic quotes are *data* here: the
+    # normalisers exist precisely to handle the characters French portals emit.
+    "RUF001",
+    "RUF002",
+    # SQLAlchemy declarative attributes (`type_annotation_map`, `__table_args__`)
+    # are mutable class-level values by design.
+    "RUF012",
+    # Word lists are written as whitespace-separated prose and split at import.
+    # A 90-element quoted list literal is unreadable and invites duplicates.
+    "SIM905",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test doubles use mutable class attributes as configurable knobs.
+"tests/*" = ["RUF012"]
+
+[tool.mypy]
+python_version = "3.10"
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+ignore_missing_imports = true

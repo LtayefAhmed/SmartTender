@@ -1,0 +1,274 @@
+# =============================================================================
+# Local development / demo stack.
+#
+# The worker split is the interesting part. Rather than one worker consuming
+# every queue, scraping runs in its own container with modest concurrency while
+# the pipeline queues run in another with higher concurrency. That is the
+# deployment-level expression of the isolation invariant: a portal that hangs
+# occupies scraping slots only, and uploads keep flowing through parsing.
+#
+# Scale a queue independently with, for example:
+#     docker compose up -d --scale worker-scraping=4
+# =============================================================================
+
+x-app-env: &app-env
+  SMARTTENDER_ENV: development
+  SMARTTENDER_LOG_FORMAT: json
+  SMARTTENDER_LOG_LEVEL: INFO
+  SMARTTENDER_DB__HOST: postgres
+  SMARTTENDER_DB__USER: smarttender
+  SMARTTENDER_DB__PASSWORD: smarttender
+  SMARTTENDER_DB__NAME: smarttender
+  SMARTTENDER_REDIS__HOST: redis
+  SMARTTENDER_STORAGE__ENDPOINT: minio:9000
+  SMARTTENDER_STORAGE__ACCESS_KEY: minioadmin
+  SMARTTENDER_STORAGE__SECRET_KEY: minioadmin
+  SMARTTENDER_STORAGE__SECURE: "false"
+  # Off for local development only. Single-node MinIO has no KMS, and SSE-S3
+  # without one is rejected with `NotImplemented` — every document then fails
+  # to archive while ingestion carries on, which is a nasty silent gap.
+  # PRODUCTION MUST configure KMS and leave this true (the code default).
+  SMARTTENDER_STORAGE__SERVER_SIDE_ENCRYPTION: "${SMARTTENDER_STORAGE__SERVER_SIDE_ENCRYPTION:-false}"
+  SMARTTENDER_API__API_KEYS: '["dev-local-key"]'
+  SMARTTENDER_NOTIFICATIONS__EMAIL_ENABLED: "true"
+  SMARTTENDER_NOTIFICATIONS__SMTP_HOST: mailpit
+  SMARTTENDER_NOTIFICATIONS__SMTP_PORT: "1025"
+
+  # Document extraction. Tesseract is installed in the image and on PATH.
+  SMARTTENDER_EXTRACTION__ENABLED: "${SMARTTENDER_EXTRACTION__ENABLED:-true}"
+  SMARTTENDER_EXTRACTION__OCR_ENABLED: "${SMARTTENDER_EXTRACTION__OCR_ENABLED:-true}"
+  SMARTTENDER_EXTRACTION__OCR_LANGUAGES: "${SMARTTENDER_EXTRACTION__OCR_LANGUAGES:-fra+eng}"
+
+  # --- Connector credentials ------------------------------------------------
+  # Interpolated from `.env`, which Compose reads automatically. Hardcoding
+  # empty strings here would silently override real credentials and leave every
+  # paid source reporting `credentials_missing` with no obvious cause.
+  # The `:-` defaults keep the stack starting cleanly when they are unset.
+  SMARTTENDER_CONNECTOR_J360_USERNAME: "${SMARTTENDER_CONNECTOR_J360_USERNAME:-}"
+  SMARTTENDER_CONNECTOR_J360_PASSWORD: "${SMARTTENDER_CONNECTOR_J360_PASSWORD:-}"
+  SMARTTENDER_CONNECTOR_J360_API_KEY: "${SMARTTENDER_CONNECTOR_J360_API_KEY:-}"
+  # TUNEPS mutual TLS. The paths must be visible *inside* the container — see
+  # the `certs` bind mount below.
+  SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH: "${SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_KEY_PATH: "${SMARTTENDER_CONNECTOR_TUNEPS_KEY_PATH:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_KEY_PASSWORD: "${SMARTTENDER_CONNECTOR_TUNEPS_KEY_PASSWORD:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_USERNAME: "${SMARTTENDER_CONNECTOR_TUNEPS_USERNAME:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_PASSWORD: "${SMARTTENDER_CONNECTOR_TUNEPS_PASSWORD:-}"
+
+# The image's HEALTHCHECK curls /health/live, which only the API serves. Workers
+# and Beat run no HTTP server, so they would report "unhealthy" forever — and an
+# orchestrator would restart them in a loop. Each non-API service overrides it.
+x-worker-healthcheck: &worker-healthcheck
+  # Broadcast ping over the broker: succeeds if this worker answers.
+  test: ["CMD-SHELL", "celery -A app.workers.celery_app:celery_app inspect ping -t 10 | grep -q pong"]
+  interval: 60s
+  timeout: 20s
+  retries: 3
+  start_period: 45s
+
+x-app-base: &app-base
+  build:
+    context: .
+    target: runtime
+  image: smarttender/ingestion:local
+  environment: *app-env
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    minio: { condition: service_healthy }
+  volumes:
+    # Config is mounted so a selector fix is an edit + `POST /sources/sync`,
+    # with no rebuild.
+    - ./config:/app/config:ro
+    # TUNTRUST certificates. Put the PEM files in ./certs (git-ignored) and
+    # point SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH at /app/certs/<file>.pem.
+    - ./certs:/app/certs:ro
+  restart: unless-stopped
+
+services:
+  # --- infrastructure ------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: smarttender
+      POSTGRES_PASSWORD: smarttender
+      POSTGRES_DB: smarttender
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smarttender -d smarttender"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Persist the broker: an unacked scraping task must survive a restart.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"   # console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web UI — read the notification emails here
+    restart: unless-stopped
+
+  # --- one-shot migration --------------------------------------------------
+  migrate:
+    <<: *app-base
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  # --- application ---------------------------------------------------------
+  api:
+    <<: *app-base
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+  # Operator dashboard. Static React bundle served by nginx, which also proxies
+  # /api to the backend so the browser stays same-origin (no CORS).
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    image: smarttender/frontend:local
+    environment:
+      SMARTTENDER_UI_API_BASE: /api
+      SMARTTENDER_UI_API_KEY: dev-local-key
+    ports: ["3000:80"]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Network-bound, long-running, bursty. Low concurrency: the bottleneck is
+  # portal politeness, not CPU.
+  #
+  # Uses the browser image because TUNEPS (dynamic) and J360 (browser login)
+  # both render in Playwright. Build it once:
+  #     docker build --target runtime-browser -t smarttender/ingestion:browser .
+  worker-scraping:
+    <<: *app-base
+    image: smarttender/ingestion:browser
+    build:
+      context: .
+      target: runtime-browser
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "scraping", "--concurrency", "2",
+       "--hostname", "scraping@%h", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *worker-healthcheck
+
+  # CPU-bound pipeline work. Higher concurrency, and deliberately separate so a
+  # stuck portal can never starve it.
+  worker-pipeline:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "parsing,scoring,default", "--concurrency", "8",
+       "--hostname", "pipeline@%h", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *worker-healthcheck
+
+  # I/O-bound and low-volume; also runs the housekeeping loops.
+  worker-support:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "notifications,maintenance,ocr,ai", "--concurrency", "4",
+       "--hostname", "support@%h", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *worker-healthcheck
+
+  # EXACTLY ONE Beat instance. Two would double-fire every schedule.
+  beat:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "beat", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    # Beat exposes no queryable liveness surface — it is a publisher, not a
+    # consumer, so there is nothing to ping. A dead Beat surfaces as schedules
+    # that stop firing, which `check_connector_health` already alerts on.
+    healthcheck:
+      disable: true
+    deploy:
+      replicas: 1
+
+  flower:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "flower",
+       "--port=5555", "--url_prefix=flower"]
+    ports: ["5555:5555"]
+
+  # --- observability -------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    ports: ["9090:9090"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # prometheus.yml references this in `rule_files`; without the mount
+      # Prometheus refuses to start.
+      - ./deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["3001:3000"]
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:

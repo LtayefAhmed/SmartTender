@@ -1,0 +1,129 @@
+# =============================================================================
+# Prometheus alerting rules.
+#
+# The ordering principle: alert on *symptoms the user would notice* and on
+# *silence*, not on individual errors. A single failed request is noise; a
+# source that has stopped producing tenders is a business problem.
+# =============================================================================
+groups:
+  - name: smarttender-connectors
+    rules:
+      - alert: ConnectorFailureRateHigh
+        expr: |
+          sum by (connector) (rate(scraper_failure_total[30m]))
+          /
+          clamp_min(sum by (connector) (rate(scraper_failure_total[30m]))
+                  + sum by (connector) (rate(scraper_success_total[30m])), 0.001)
+          > 0.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.connector }} is failing more than half its runs"
+          runbook: "Check /sources/{{ $labels.connector }} for the last error and circuit state."
+
+      - alert: ConnectorSelectorBroken
+        expr: increase(parsing_failures_total{error_type="SelectorBrokenError"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.connector }} markup changed — selectors no longer match"
+          description: >
+            The portal returned a page but the guard selector matched nothing.
+            The connector is silently blind until config/connectors/{{ $labels.connector }}.yaml
+            is updated. This is the single highest-value alert in the platform.
+
+      - alert: ConnectorProducingNothing
+        expr: |
+          sum by (connector) (increase(scraper_success_total[24h])) > 3
+          and
+          sum by (connector) (increase(scraper_items_found_total[24h])) == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.connector }} runs succeed but return zero tenders"
+          description: >
+            HTTP 200 with an empty listing. Almost always a broken selector
+            rather than a genuinely empty portal.
+
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state == 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit open for {{ $labels.connector }} — the source is being skipped"
+
+      - alert: ConnectorSilent
+        expr: time() - max by (connector) (scraper_success_total > bool 0) * 0 == 0
+        for: 0m
+        labels: { severity: none }
+        annotations:
+          summary: "placeholder — silence is detected by the check_connector_health task"
+
+  - name: smarttender-pipeline
+    rules:
+      - alert: QueueBacklogGrowing
+        expr: queue_size > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} has more than 1000 pending messages"
+          description: >
+            Arrival rate has overtaken processing rate. Scale the worker for
+            this queue before latency becomes visible.
+
+      - alert: QueueBacklogCritical
+        expr: queue_size > 10000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue {{ $labels.queue }} backlog is critical"
+
+      - alert: DuplicateRatioSpike
+        expr: duplicate_ratio > 0.9
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.connector }} is returning almost only duplicates"
+          description: >
+            Usually means incremental pagination stopped working and the
+            connector is re-reading the whole archive each run.
+
+      - alert: ParsingFailureSpike
+        expr: sum by (connector) (rate(parsing_failures_total[15m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.connector }} is failing to parse many records"
+
+      - alert: StorageFailures
+        expr: rate(storage_operations_total{outcome="failure"}[10m]) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Object storage is rejecting writes — originals are not being archived"
+
+  - name: smarttender-api
+    rules:
+      - alert: ApiDown
+        expr: up{component="api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The ingestion API is not responding to scrapes"
+
+      - alert: SlowScrapeLaunch
+        expr: histogram_quantile(0.95, sum by (le) (rate(stage_duration_seconds_bucket{stage="ingest"}[10m]))) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingestion is taking over 2s at p95 — the request path should be milliseconds"

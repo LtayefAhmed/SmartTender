@@ -1,0 +1,84 @@
+# =============================================================================
+# Duplicate detection policy — three escalating stages, cheapest first.
+#
+#   1. canonical URL   O(1) index lookup, catches re-crawls of the same page
+#   2. content hash    O(1) index lookup, catches the same file from two portals
+#   3. semantic        bounded candidate set + similarity, catches re-publications
+#                      and cross-portal mirrors with different wording
+#
+# A tender only reaches stage N+1 if stage N found nothing.
+# =============================================================================
+
+enabled: true
+
+canonical_url:
+  enabled: true
+  # Query parameters stripped before canonicalisation (tracking + session noise).
+  strip_query_params:
+    - "utm_source"
+    - "utm_medium"
+    - "utm_campaign"
+    - "utm_term"
+    - "utm_content"
+    - "gclid"
+    - "fbclid"
+    - "sessionid"
+    - "jsessionid"
+    - "phpsessid"
+    - "_ga"
+    - "ref"
+    - "referrer"
+    - "timestamp"
+    - "t"
+  strip_fragment: true
+  lowercase_host: true
+  drop_default_port: true
+  drop_trailing_slash: true
+  sort_query_params: true
+
+content_hash:
+  enabled: true
+  algorithm: "sha256"
+  # Hash the raw bytes of the source document. Also hash a normalised text
+  # projection so that the same PDF re-exported with a different producer
+  # timestamp still collides.
+  hash_raw_bytes: true
+  hash_normalised_text: true
+  # Normalisation applied before the text hash.
+  normalise:
+    lowercase: true
+    collapse_whitespace: true
+    strip_punctuation: true
+    strip_digits: false
+
+semantic:
+  enabled: true
+  # Backend is resolved from SMARTTENDER_SEMANTIC__BACKEND; `lexical` is the
+  # dependency-free default and is deterministic (important for tests).
+  threshold: 0.92
+  # Fields concatenated into the comparison key, in order, with weights.
+  fields:
+    title: 1.0
+    buyer: 0.6
+    reference: 0.8
+    description: 0.4
+  # Candidate pre-filter — semantic comparison is only run against tenders that
+  # already look plausible, which keeps the stage O(k) instead of O(n).
+  candidate_filter:
+    # Only compare against tenders ingested in this window.
+    lookback_days: 120
+    # Deadlines must be within this many days of each other (when both known).
+    deadline_tolerance_days: 3
+    # Hard ceiling on candidates compared, newest first.
+    max_candidates: 200
+    # Restrict to the same country when both are known.
+    same_country: true
+
+on_duplicate:
+  # What to do when a duplicate is confirmed.
+  action: "reject"            # reject | merge_sources
+  record_evidence: true       # persist which stage matched and against what
+  # A duplicate arriving from a *new* source still registers that source on the
+  # canonical tender, so the dashboard can show "seen on 3 portals".
+  attach_source_to_canonical: true
+  notify: false
