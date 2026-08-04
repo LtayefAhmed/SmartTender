@@ -47,7 +47,10 @@ pagination:
   # The SPA paginates by clicking a button, not by changing the URL. The
   # connector drives the Material paginator; these bounds still apply.
   mode: "spa_paginator"
-  rows_per_page: 10
+  # The portal offers 10/100/200/400/800 per page. Raising it is the single
+  # cheapest optimisation available here: 200 results arrive in one page load
+  # instead of twenty, which is twenty times less work for TUNEPS as well.
+  rows_per_page: 100
   max_pages: 20
   # Stop once a page repeats rows we have already seen — an incremental run
   # against a portal that published nothing new then costs one page.
@@ -75,6 +78,67 @@ selectors:
     next_button: "button.mat-paginator-navigation-next"
     range_label: ".mat-paginator-range-label"
     rows_present: "table tbody tr.mat-row"
+    page_size_select: "mat-select#mat-select-2"
+
+  # ── Detail page ("Fiche détails") ──────────────────────────────────────────
+  # The listing gives six columns; this page gives the full object, the
+  # procedure, the lots and the evaluation method. Fields are read by their
+  # LABEL rather than by position or generated id — the page is a flat series
+  # of "Label  Value" pairs, and labels survive a re-layout that would break
+  # any structural selector.
+  #
+  # No attachments: downloading a cahier des charges on TUNEPS requires an
+  # authenticated TUNTRUST certificate, which is a bidding credential rather
+  # than a reading one. The text below is what is publicly available.
+  detail:
+    wait_for: "text=Informations générales"
+    labels:
+      description: "Objet A.O"
+      reference: "N° référence"
+      buyer: "Nom acheteur public"
+      procurement_type: "Mode passation"
+      order_type: "Type de commande"
+      price_nature: "Nature prix"
+      funding_source: "Source financement"
+      evaluation_method: "Méthodologie evaluation"
+      offers_open_at: "Date heure ouverture offres"
+      offer_validity_days: "Durée validité offre"
+      opening_place: "Lieu douverture offres"
+      department: "Département"
+      contact_name: "Responsable"
+      framework_agreement: "Marché cadre"
+      specification_price: "Prix cahier charges"
+
+  # ── The portal's own search form ───────────────────────────────────────────
+  # Driving these makes TUNEPS do the filtering: "logiciel" typed into Objet
+  # A.O returns 181 matches instead of the whole catalogue, so a page of
+  # results is a page of matches and far fewer pages need fetching.
+  #
+  # Fields are addressed through their *label*, not through the `mat-input-N`
+  # ids Angular Material generates — those are assigned in instantiation order
+  # and shift the moment the portal adds a field above them.
+  search_form:
+    objet: 'mat-form-field:has-text("Objet A.O") input'
+    reference: 'mat-form-field:has-text("N° A.O") input'
+    buyer_select: 'mat-form-field:has-text("Acheteur public") mat-select'
+    procedure_select: 'mat-form-field:has-text("Mode passation") mat-select'
+    submit: 'button.filter-btn:has-text("Rechercher")'
+    reset: 'button.filter-btn:has-text("Réinitialiser")'
+
+# The detail page names the procedure in the portal's own words. Mapping it
+# onto the platform vocabulary is what lets "restricted procedures only" mean
+# the same thing across sources; an unmapped wording is kept verbatim in
+# `extra` rather than discarded.
+filter_values:
+  procurement_type:
+    "Appel d'offres ouvert": "open"
+    "Appel d’offres ouvert": "open"
+    "Appel d'offres précédé d'une présélection": "restricted"
+    "Appel d’offres précédé d’une présélection": "restricted"
+    "AO en deux étapes": "restricted"
+    "Appel d'offres avec concours": "restricted"
+    "Appel d’offres avec concours": "restricted"
+    "Consultation": "direct_award"
 
 # The listing is text/JS-rendered; the SPA has already localised everything.
 parsing:

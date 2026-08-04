@@ -13,6 +13,7 @@ declare global {
   interface Window {
     __SMARTTENDER_API__?: string;
     __SMARTTENDER_API_KEY__?: string;
+    __SMARTTENDER_USER_ID__?: string;
   }
 }
 
@@ -37,8 +38,19 @@ export class ApiError extends Error {
 export interface UserContext {
   userId: string;
 }
-// The demo UI acts as one operator; a real deployment gets this from auth.
-export const USER_ID = "operator";
+/**
+ * Who the UI claims to be, sent as `X-User-Id`.
+ *
+ * Module 1 authenticates service-to-service with an API key; user identity is
+ * the auth module's job and arrives as a header the gateway has validated.
+ * Until that exists the UI acts as a single operator.
+ *
+ * This must match the identity a notification profile was created for
+ * (`smarttender-admin seed --user <id>`) — notifications are per-user, so a
+ * mismatch shows an empty Notifications page while alerts pile up unseen for
+ * somebody else.
+ */
+export const USER_ID = window.__SMARTTENDER_USER_ID__ ?? "operator";
 
 async function request<T>(
   method: string,

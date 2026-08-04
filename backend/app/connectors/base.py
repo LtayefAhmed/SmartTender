@@ -33,10 +33,12 @@ from app.connectors.http.circuit_breaker import CircuitBreaker
 from app.connectors.http.client import ResilientHttpClient
 from app.connectors.models import (
     ConnectorOutcome,
+    DetailResult,
     FetchedPage,
     ItemFailure,
     NormalizedTender,
     RawRecord,
+    TenderDetailRequest,
 )
 from app.core.config import get_settings
 from app.core.enums import JobTrigger
@@ -157,6 +159,29 @@ class BaseConnector(ABC):
         no data.
         """
         return record
+
+    #: Whether this connector can open a notice's own page. Consulted before a
+    #: run is set up at all, so an enrichment pass over a source that cannot do
+    #: it costs nothing rather than launching a browser to discover as much.
+    supports_detail: bool = False
+
+    async def fetch_detail(self, tender: TenderDetailRequest) -> DetailResult | None:
+        """Open one notice's own page and return what the listing could not give.
+
+        Deliberately separate from ``enrich``. That hook runs *inside* the crawl,
+        once per record, and therefore has to be cheap enough to pay for every
+        result including the ones nobody will ever read. This runs afterwards,
+        against a small set already judged worth the round trip — which is what
+        makes an expensive fetch affordable.
+
+        A listing gives a title and a deadline. A detail page gives the budget,
+        the full description, the CPV nomenclature and the tender documents —
+        the material scoring needs to be more than keyword matching, and the
+        only thing a CV can actually be matched against.
+
+        Returning ``None`` means "nothing more to add" and is not a failure.
+        """
+        return None
 
     def matches_filters(self, tender: NormalizedTender, filters: TenderFilters) -> bool:
         """Client-side filtering for criteria the portal could not express.
@@ -309,6 +334,21 @@ class BaseConnector(ABC):
             return outcome
 
     # ------------------------------------------------------------------
+    @classmethod
+    def unmet_precondition(cls, config: ConnectorConfig) -> str | None:
+        """A requirement this connector has that configuration cannot express.
+
+        Config can declare *what* a source needs; only the connector knows
+        whether the need is actually met right now — a data directory that was
+        not shipped, a binary that is not installed, a driver that is missing.
+
+        Declaring it here rather than raising during the run is what lets a
+        source say "unavailable" instead of "failing". The difference matters to
+        whoever is looking at the screen: unavailable is a setup step, failing
+        is an incident.
+        """
+        return None
+
     def _preflight_skip_reason(self) -> str | None:
         """Reasons to not even attempt the run. All of them are normal."""
         settings = get_settings()
@@ -319,7 +359,7 @@ class BaseConnector(ABC):
             return f"not_enabled_in_env:{settings.env}"
         if self.config.requires_credentials and not self.config.has_credentials():
             return "credentials_missing"
-        return None
+        return type(self).unmet_precondition(self.config)
 
     async def _execute(self, filters: TenderFilters, outcome: ConnectorOutcome) -> None:
         """The happy path, with per-item isolation."""
@@ -337,6 +377,7 @@ class BaseConnector(ABC):
                     pages_fetched=self._pages_fetched,
                     items_found=outcome.items_found,
                 )
+                outcome.stop_reason = "deadline"
                 break
 
             try:
@@ -366,6 +407,7 @@ class BaseConnector(ABC):
             for record in records:
                 if max_items and outcome.items_found >= max_items:
                     self.log.info("connector.item_limit_reached", limit=max_items)
+                    outcome.stop_reason = "results_satisfied"
                     return
 
                 try:
@@ -393,6 +435,24 @@ class BaseConnector(ABC):
                     continue
 
                 outcome.tenders.append(tender)
+
+            # Stop before asking for another page, not on the first record of it.
+            # Checking only inside the record loop means a quota filled by a
+            # page's last item still costs one more fetch — and with J360's 20
+            # results per page against a default of 20, that was every single
+            # search paying for a page it then discarded, on a metered account.
+            if max_items and outcome.items_found >= max_items:
+                self.log.info("connector.item_limit_reached", limit=max_items)
+                outcome.stop_reason = "results_satisfied"
+                return
+
+        # The generator ended by itself. Either the portal ran out of pages, or
+        # our own page cap cut it short — and those mean opposite things to
+        # someone asking "is that really all there is?".
+        if outcome.stop_reason is None:
+            outcome.stop_reason = (
+                "page_cap" if self._pages_fetched >= self.max_pages else "source_exhausted"
+            )
 
     async def _process_record(self, record: RawRecord) -> NormalizedTender | None:
         """enrich -> validate -> normalize, for one record."""
@@ -469,32 +529,48 @@ def _contains_any(haystack: str | None, needles: list[str]) -> bool:
         return True
     if not haystack:
         return False
-    lowered = haystack.lower()
-    return any(needle.lower() in lowered for needle in needles)
+    # Folded on both sides for the same reason as keywords: a country typed as
+    # "Algerie" must match a portal that writes "Algérie".
+    folded = _fold(haystack)
+    return any(_fold(needle) in folded for needle in needles if _fold(needle))
+
+
+def _fold(text: str | None) -> str:
+    """Lowercase and strip accents, keeping punctuation so phrases still match."""
+    from app.core.identity import normalize_text
+
+    return normalize_text(text, strip_punctuation=False)
 
 
 def _client_side_match(tender: NormalizedTender, filters: TenderFilters) -> bool:
     """Apply filter criteria that the portal could not express itself."""
-    blob = " ".join(
-        part
-        for part in (
-            tender.title,
-            tender.description,
-            tender.buyer,
-            tender.sector,
-            tender.category,
-            tender.reference,
+    # Accents are folded on both sides. Users type "developpement" as readily as
+    # "développement", and procurement portals are themselves inconsistent —
+    # matching the raw strings would silently drop real hits over a diacritic.
+    blob = _fold(
+        " ".join(
+            part
+            for part in (
+                tender.title,
+                tender.description,
+                tender.buyer,
+                tender.sector,
+                tender.category,
+                tender.reference,
+            )
+            if part
         )
-        if part
-    ).lower()
+    )
 
     if filters.keywords:
-        needles = [k.lower() for k in filters.keywords]
-        hits = [n in blob for n in needles]
-        if not (any(hits) if filters.keywords_any else all(hits)):
+        needles = [_fold(k) for k in filters.keywords]
+        hits = [n in blob for n in needles if n]
+        if hits and not (any(hits) if filters.keywords_any else all(hits)):
             return False
 
-    if filters.excluded_keywords and any(k.lower() in blob for k in filters.excluded_keywords):
+    if filters.excluded_keywords and any(
+        _fold(k) in blob for k in filters.excluded_keywords if _fold(k)
+    ):
         return False
 
     if filters.countries and not _contains_any(tender.country, filters.countries):

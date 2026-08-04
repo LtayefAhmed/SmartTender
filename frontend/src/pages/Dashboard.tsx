@@ -53,7 +53,19 @@ export function Dashboard() {
       />
       <div className="content stack">
         <div className="grid cols-4">
-          <StatTile label="Appels d'offres" value={s.total_tenders} tone="blue" foot="dans le référentiel" />
+          {/* The headline is what can still be bid on. The archive stays
+              visible underneath — it feeds duplicate detection and the win/loss
+              history — but it is not the number to act on. */}
+          <StatTile
+            label="Appels d'offres ouverts"
+            value={s.open_tenders ?? s.total_tenders}
+            tone="blue"
+            foot={
+              s.archived_tenders
+                ? `+ ${s.archived_tenders} archivés (échéance passée)`
+                : "échéance non dépassée"
+            }
+          />
           <StatTile
             label="Dernières 24 h"
             value={s.ingested_last_24h}

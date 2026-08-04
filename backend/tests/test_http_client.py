@@ -437,3 +437,71 @@ class TestRobots:
 
         with pytest.raises(RobotsDisallowedError):
             asyncio.run(run())
+
+
+class TestBrowserActions:
+    """A required interaction must fail loudly; an optional one must not.
+
+    The distinction protects against the worst kind of scraper bug: a search
+    field that was never filled returns the portal's whole catalogue, and the
+    crawl reports thousands of unrelated notices as matching the user's
+    criteria. Silence there is far more damaging than an error.
+    """
+
+    class _FakePage:
+        """Minimal Playwright page stand-in — no browser, no network."""
+
+        def __init__(self, failing: set[str] | None = None):
+            self.failing = failing or set()
+            self.performed: list[str] = []
+
+        async def fill(self, selector, value):
+            if "fill" in self.failing:
+                raise RuntimeError("element not found")
+            self.performed.append(f"fill:{value}")
+
+        async def click(self, selector, timeout=None):
+            if "click" in self.failing:
+                raise RuntimeError("element not visible")
+            self.performed.append(f"click:{selector}")
+
+        async def wait_for_timeout(self, ms):
+            self.performed.append(f"wait:{ms}")
+
+    def _renderer(self):
+        from app.connectors.browser.playwright_client import BrowserRenderer
+
+        return BrowserRenderer(connector_key="probe", config={})
+
+    def test_a_required_action_that_fails_raises(self):
+        from app.core.exceptions import BrowserActionError
+
+        renderer = self._renderer()
+        page = self._FakePage(failing={"fill"})
+
+        with pytest.raises(BrowserActionError):
+            asyncio.run(
+                renderer._perform(
+                    page,
+                    {"type": "fill", "selector": "#q", "value": "x", "required": True},
+                )
+            )
+
+    def test_an_optional_action_that_fails_is_swallowed(self):
+        """A cookie banner that was never shown must not abort the page."""
+        renderer = self._renderer()
+        page = self._FakePage(failing={"click"})
+
+        asyncio.run(renderer._perform(page, {"type": "click", "selector": ".cookie-ok"}))
+
+        assert page.performed == []      # nothing happened, nothing raised
+
+    def test_a_successful_action_is_performed(self):
+        renderer = self._renderer()
+        page = self._FakePage()
+
+        asyncio.run(
+            renderer._perform(page, {"type": "fill", "selector": "#q", "value": "logiciel"})
+        )
+
+        assert page.performed == ["fill:logiciel"]

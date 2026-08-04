@@ -466,3 +466,49 @@ class TestErrorContract:
         response = client.get("/health/live")
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["X-Frame-Options"] == "DENY"
+
+
+class TestBusinessDomains:
+    """The domain picker is served from the scoring profile, not duplicated.
+
+    One definition means adding a domain to config/scoring.yaml makes it both
+    scoreable and searchable — the alternative is a frontend list that drifts
+    from the scorer until a domain is searchable but scores nothing.
+    """
+
+    def test_it_serves_the_seven_inetum_domains(self, client):
+        body = client.get("/admin/business-domains").json()
+        names = [d["name"] for d in body["domains"]]
+
+        assert names == [
+            "SAGE",
+            "SIRH",
+            "SAP",
+            "Microsoft",
+            "Application Services",
+            "Digital consulting",
+            "IA & Data",
+        ]
+
+    def test_each_domain_carries_both_vocabularies(self, client):
+        """Expertise terms score; search terms are what portals understand.
+        A domain missing either is half-wired."""
+        body = client.get("/admin/business-domains").json()
+
+        for domain in body["domains"]:
+            assert domain["expertise"], f"{domain['name']} has no scoring terms"
+            assert domain["search_terms"], f"{domain['name']} has no search terms"
+
+    def test_search_terms_speak_the_buyers_language(self, client):
+        """Vendor names belong to scoring. Searching TUNEPS for "SAGE X3"
+        returns nothing — a Tunisian notice says "progiciel de gestion"."""
+        body = client.get("/admin/business-domains").json()
+        sage = next(d for d in body["domains"] if d["name"] == "SAGE")
+
+        assert "SAGE X3" in sage["expertise"]
+        assert any("progiciel" in t.lower() for t in sage["search_terms"])
+
+    def test_the_profile_version_is_reported(self, client):
+        """The picker's vocabulary and a stored score must be traceable to the
+        same profile revision."""
+        assert client.get("/admin/business-domains").json()["profile_version"]

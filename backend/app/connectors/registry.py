@@ -29,7 +29,14 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["ConnectorInfo", "ConnectorRegistry", "get_registry", "register"]
+__all__ = [
+    "ConnectorInfo",
+    "ConnectorRegistry",
+    "connector_class",
+    "get_registry",
+    "register",
+]
+
 
 T = TypeVar("T", bound=type[BaseConnector])
 
@@ -51,6 +58,17 @@ def register(key: str) -> Callable[[T], T]:
         return cls
 
     return decorator
+
+
+def connector_class(key: str) -> type[BaseConnector] | None:
+    """The implementation bound to a config key, or ``None``.
+
+    Exposed so callers outside a run — the enrichment pass, health checks —
+    can ask what a connector is capable of without instantiating it, and
+    without reaching into the registry's private table.
+    """
+    get_registry().load()
+    return _REGISTERED.get(key)
 
 
 @dataclass(slots=True)
@@ -204,6 +222,14 @@ class ConnectorRegistry:
         elif config.requires_credentials and not config.has_credentials():
             available, reason = False, "credentials_missing"
             health = SourceHealth.CREDENTIALS_MISSING
+        else:
+            # Preconditions only the connector class can evaluate. Asking here
+            # keeps a source that cannot possibly run out of the picker, rather
+            # than letting an operator select it and collect a failure.
+            connector_cls = _REGISTERED.get(key)
+            unmet = connector_cls.unmet_precondition(config) if connector_cls else None
+            if unmet:
+                available, reason, health = False, unmet, SourceHealth.DISABLED
 
         return ConnectorInfo(
             key=key,

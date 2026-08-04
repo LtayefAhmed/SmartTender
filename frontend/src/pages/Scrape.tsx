@@ -11,8 +11,15 @@ import type {
 import { TopBar } from "../components/Layout";
 import { Badge, Card, Meter, Loading, Spinner, Empty } from "../components/ui";
 import { TagInput } from "../components/TagInput";
+import { DomainPicker } from "../components/DomainPicker";
 import { useToast } from "../components/toast";
-import { fmtDuration, fmtRelative, statusColor } from "../lib/format";
+import {
+  fmtDuration,
+  fmtRelative,
+  isInactiveByDesign,
+  statusColor,
+  unavailableLabel,
+} from "../lib/format";
 
 export function Scrape() {
   const toast = useToast();
@@ -30,7 +37,7 @@ export function Scrape() {
   const [keywords, setKeywords] = useState<string[]>([]);
   const [countries, setCountries] = useState<string[]>([]);
   const [sectors, setSectors] = useState<string[]>([]);
-  const [maxPages, setMaxPages] = useState(2);
+  const [maxResults, setMaxResults] = useState(20);
   const [publishedWithin, setPublishedWithin] = useState<number | "">("");
   const [launching, setLaunching] = useState(false);
 
@@ -49,7 +56,7 @@ export function Scrape() {
           keywords,
           countries,
           sectors,
-          max_pages: maxPages,
+          max_results_per_source: maxResults,
           ...(publishedWithin ? { published_within_days: publishedWithin } : {}),
         },
       });
@@ -67,7 +74,12 @@ export function Scrape() {
   }
 
   const available = registry.data?.connectors.filter((c) => c.available) ?? [];
-  const unavailable = registry.data?.connectors.filter((c) => !c.available) ?? [];
+  // Only sources whose unavailability is actionable are worth a line here.
+  // A test connector that production images deliberately exclude is noise on
+  // a screen whose job is "launch a search" — it reads as a broken source.
+  const unavailable = (registry.data?.connectors ?? []).filter(
+    (c) => !c.available && !isInactiveByDesign(c.unavailable_reason)
+  );
 
   return (
     <>
@@ -105,19 +117,27 @@ export function Scrape() {
                 </div>
                 {unavailable.length > 0 && (
                   <div className="tiny muted mt">
-                    Indisponibles :{" "}
                     {unavailable.map((c) => (
-                      <span key={c.key} title={c.missing_credentials?.join(", ")}>
-                        {c.key} ({c.unavailable_reason}){" "}
-                      </span>
+                      <div key={c.key}>
+                        <b>{c.key}</b> indisponible — {unavailableLabel(c.unavailable_reason)}
+                        {c.missing_credentials?.length ? ` (${c.missing_credentials.join(", ")})` : ""}
+                      </div>
                     ))}
                   </div>
                 )}
               </div>
 
               <div className="field">
-                <label>Mots-clés</label>
+                <label>Domaines Inetum</label>
+                <DomainPicker selected={keywords} onChange={setKeywords} />
+              </div>
+
+              <div className="field">
+                <label>Mots-clés envoyés aux portails</label>
                 <TagInput value={keywords} onChange={setKeywords} placeholder="développement, maintenance…" />
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  Alimentés par les domaines ci-dessus, ou saisis librement.
+                </div>
               </div>
               <div className="grid cols-2" style={{ gap: 14 }}>
                 <div className="field">
@@ -131,15 +151,19 @@ export function Scrape() {
               </div>
               <div className="grid cols-2" style={{ gap: 14 }}>
                 <div className="field">
-                  <label>Pages max / source</label>
+                  <label>Résultats souhaités / source</label>
                   <input
                     className="input"
                     type="number"
                     min={1}
-                    max={40}
-                    value={maxPages}
-                    onChange={(e) => setMaxPages(Number(e.target.value))}
+                    max={500}
+                    value={maxResults}
+                    onChange={(e) => setMaxResults(Number(e.target.value))}
                   />
+                  <div className="tiny muted" style={{ marginTop: 4 }}>
+                    Nombre d'offres <b>correspondant à vos filtres</b>. Le scraper
+                    parcourt autant de pages que nécessaire pour les atteindre.
+                  </div>
                 </div>
                 <div className="field">
                   <label>Publié depuis (jours)</label>
@@ -267,8 +291,7 @@ function RunDiagnosis({ run }: { run: ConnectorRun }) {
   if (run.extra?.skip_reason) {
     return <span className="tiny muted">ignoré — {run.extra.skip_reason}</span>;
   }
-  // Nothing to explain: results came through.
-  if (parsed == null || run.items_found > 0) return null;
+  if (parsed == null) return null;
 
   if (parsed === 0 && run.pages_fetched > 0) {
     return (
@@ -277,10 +300,53 @@ function RunDiagnosis({ run }: { run: ConnectorRun }) {
       </span>
     );
   }
+
   return (
-    <span className="tiny muted">
-      {parsed} ligne(s) extraite(s), {filtered} écartée(s) par vos filtres
-      {dupes > 0 && `, ${dupes} doublon(s) dans la page`} — les sélecteurs fonctionnent
-    </span>
+    <div className="tiny muted">
+      {run.items_found === 0 && (
+        <div>
+          {parsed} ligne(s) extraite(s), {filtered} écartée(s) par vos filtres
+          {dupes > 0 && `, ${dupes} doublon(s)`} — les sélecteurs fonctionnent
+        </div>
+      )}
+      <StopReason reason={run.extra?.stop_reason} parsed={parsed} />
+    </div>
   );
+}
+
+/**
+ * Says whether the result set is complete.
+ *
+ * "The portal had nothing more" and "we stopped at our own safety cap" look
+ * identical from a result count, and lead to opposite conclusions — one means
+ * you have seen everything, the other means you have not. Saying which is the
+ * difference between trusting the number and being misled by it.
+ */
+function StopReason({ reason, parsed }: { reason?: string | null; parsed: number }) {
+  if (!reason) return null;
+  if (reason === "source_exhausted") {
+    return (
+      <div style={{ color: "var(--teal)" }}>
+        ✓ Source parcourue entièrement — {parsed} offre(s) au total, il n'y en a pas d'autres
+      </div>
+    );
+  }
+  if (reason === "results_satisfied") {
+    return <div>✓ Nombre de résultats demandé atteint — d'autres offres existent au-delà</div>;
+  }
+  if (reason === "page_cap") {
+    return (
+      <div style={{ color: "var(--amber, #FFB454)" }}>
+        ⚠ Plafond de pages atteint — résultat partiel, la source en contient probablement plus
+      </div>
+    );
+  }
+  if (reason === "deadline") {
+    return (
+      <div style={{ color: "var(--amber, #FFB454)" }}>
+        ⚠ Temps imparti écoulé — résultat partiel
+      </div>
+    );
+  }
+  return null;
 }

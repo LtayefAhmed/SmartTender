@@ -55,16 +55,31 @@ in the running stack: **0.24 (low relevance) without extracted text, 0.79
 
 ## Quick start
 
+> New to the project? Start with the [root README](../README.md) — it covers
+> onboarding end to end. This section is the short form.
+
 ```bash
 cd backend
 cp .env.example .env
 
 make install          # virtualenv + dependencies
-make test             # 281 tests, no infrastructure required, ~6 seconds
+make test             # 475 tests, no infrastructure required, ~10 seconds
 
-make up               # full stack: postgres, redis, minio, api, 3 workers, beat
-make seed             # default schedules
+docker compose up -d  # full stack: postgres, redis, minio, api, 3 workers, beat
+bash scripts/preflight.sh   # verify every port answers (see below)
+
+# A notification profile, or the pipeline runs to completion and announces
+# nothing — which looks exactly like a broken notifier. The id must match what
+# the UI sends as X-User-Id.
+docker compose exec api smarttender-admin seed --user operator --email you@example.com
 ```
+
+**Why `preflight` matters.** Docker Desktop on Windows forwards published ports
+through a relay that intermittently loses its binding when containers are
+recreated. The container stays healthy and serves correctly on its own network,
+so `docker compose ps` shows nothing wrong — the browser simply gets
+ERR_EMPTY_RESPONSE. The script probes each URL the way a browser would and
+restarts whatever is silent.
 
 - **Dashboard (the UI): <http://localhost:3000>**
 - API and docs: <http://localhost:8000/docs>

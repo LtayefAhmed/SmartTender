@@ -197,3 +197,44 @@ async def query_logs(
         for row in rows
     ]
     return Page.build(items, total, params)
+
+
+@router.get("/business-domains", summary="Inetum's service catalogue")
+async def business_domains(_: Principal = Depends(require_principal)) -> dict[str, Any]:
+    """The company's fields of activity, for the search screen's domain picker.
+
+    Served from the scoring profile rather than duplicated in the frontend, so
+    the catalogue has exactly one definition: adding a domain to
+    ``config/scoring.yaml`` makes it both scoreable and searchable, with no
+    code change on either side.
+
+    Each domain exposes two vocabularies for two different jobs:
+
+    ``expertise``
+        What Inetum calls its own offering — SAGE X3, S/4HANA, Copilot. Shown
+        so a user can see what a domain covers, and used by the scorer against
+        a tender's full text, where a buyer naming a product is decisive.
+
+    ``search_terms``
+        What a public buyer actually writes — "progiciel de gestion intégré".
+        This is what gets sent to the portals. Searching TUNEPS for "SAGE X3"
+        returns nothing: Tunisian notices are not written in a vendor's words.
+    """
+    from app.services.scoring import get_scoring_engine
+
+    engine = get_scoring_engine()
+    profiles = (engine.criteria_config.get("field_of_work") or {}).get("profiles") or []
+
+    return {
+        "profile_version": engine.version,
+        "domains": [
+            {
+                "name": str(p.get("name") or "").strip(),
+                "weight": float(p.get("weight") or 1.0),
+                "expertise": [str(t) for t in (p.get("terms") or [])],
+                "search_terms": [str(t) for t in (p.get("search_terms") or [])],
+            }
+            for p in profiles
+            if p.get("name")
+        ],
+    }

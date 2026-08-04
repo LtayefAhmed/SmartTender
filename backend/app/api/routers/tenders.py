@@ -245,6 +245,20 @@ async def stats_overview(
     ).all()
 
     total = (await session.execute(select(func.count(Tender.id)))).scalar_one()
+    # The number a bid manager acts on is "what can I still bid on", not "how
+    # many notices have we ever collected". Both are reported: the archive is
+    # what feeds duplicate detection and the win/loss history, so it must not
+    # be hidden — but it must not be the headline either.
+    still_open = (
+        await session.execute(
+            select(func.count(Tender.id)).where(
+                or_(Tender.deadline.is_(None), Tender.deadline >= now),
+                Tender.status.notin_(
+                    [TenderStatus.CLOSED.value, TenderStatus.CANCELLED.value]
+                ),
+            )
+        )
+    ).scalar_one()
     last_24h = (
         await session.execute(
             select(func.count(Tender.id)).where(Tender.created_at >= now - timedelta(days=1))
@@ -267,6 +281,8 @@ async def stats_overview(
 
     return {
         "total_tenders": total,
+        "open_tenders": still_open,
+        "archived_tenders": total - still_open,
         "ingested_last_24h": last_24h,
         "relevant_closing_within_7_days": closing_soon,
         "by_band": dict(band_rows),

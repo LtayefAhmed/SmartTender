@@ -81,6 +81,21 @@ MAINTENANCE_SCHEDULE: dict[str, dict[str, Any]] = {
         "schedule": 86400.0,
         "options": {"queue": "maintenance", "expires": 3600},
     },
+    # Weekly: retention is measured in months, so a daily sweep would re-scan
+    # the same rows for nothing.
+    "purge-expired-tenders": {
+        "task": "app.workers.tasks.maintenance.purge_expired_tenders",
+        "schedule": 604800.0,
+        "options": {"queue": "maintenance", "expires": 3600},
+    },
+    # Hourly rather than daily: a deadline is a time of day, and a bid manager
+    # who opens the dashboard at 14:00 should not still see this morning's
+    # 10:00 deadline listed as open.
+    "close-expired-tenders": {
+        "task": "app.workers.tasks.maintenance.close_expired_tenders",
+        "schedule": 3600.0,
+        "options": {"queue": "maintenance", "expires": 3500},
+    },
     # Digest emails. Crontab rather than an interval so they land at a
     # predictable hour local time instead of drifting with worker restarts.
     # `expires` prevents a digest from being delivered hours late after an

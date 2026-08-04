@@ -27,11 +27,13 @@ from the others. Losing one signal must never mean losing the opportunity.
 
 from __future__ import annotations
 
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any
 
 from app.connectors.models import NormalizedTender
@@ -133,6 +135,36 @@ def _clamp(value: float) -> float:
 _MAX_FULL_TEXT_CHARS = 60_000
 
 
+@lru_cache(maxsize=2048)
+def _term_pattern(term: str) -> re.Pattern[str] | None:
+    """Compile a configured term into a whole-word matcher.
+
+    Substring matching is what a naïve implementation reaches for, and it is
+    wrong in a way that only shows up on real data: ``SI`` fires on
+    "as**si**milés", and ``.NET`` on a buyer named "Khaza**net**". A waste
+    collection tender scored 0.75 and led the dashboard as our best software
+    opportunity.
+
+    Anchoring on word boundaries fixes it without weakening real matches —
+    multi-word phrases still match as phrases, because the boundaries sit at
+    the ends rather than between the words.
+    """
+    normalised = normalize_text(term)
+    if not normalised:
+        return None
+    # `\b` needs a word character on the inside edge to mean anything. Terms
+    # normalising to punctuation or digits alone fall back to plain containment.
+    left = r"\b" if normalised[0].isalnum() else ""
+    right = r"\b" if normalised[-1].isalnum() else ""
+    return re.compile(f"{left}{re.escape(normalised)}{right}")
+
+
+def _contains_term(blob: str, term: str) -> bool:
+    """Whether a configured term occurs in the tender text as a whole word."""
+    pattern = _term_pattern(term)
+    return bool(pattern and pattern.search(blob))
+
+
 def _tender_blob(tender: NormalizedTender) -> str:
     """The text every content criterion reads.
 
@@ -195,7 +227,7 @@ class FieldOfWorkScorer(CriterionScorer):
 
             # An exact term occurrence is far stronger evidence than semantic
             # proximity, so it short-circuits to a near-perfect profile score.
-            hits = [term for term in terms if normalize_text(term) in blob]
+            hits = [term for term in terms if _contains_term(blob, term)]
             if hits:
                 profile_score = 1.0
             else:
@@ -295,7 +327,7 @@ class KeywordScorer(CriterionScorer):
             return CriterionResult(None, "Tender has no text to search.")
 
         for blocked in config.get("exclude") or []:
-            if normalize_text(str(blocked)) in blob:
+            if _contains_term(blob, str(blocked)):
                 return CriterionResult(
                     0.0,
                     f"Contains the blocking term '{blocked}' — out of scope.",
@@ -312,7 +344,7 @@ class KeywordScorer(CriterionScorer):
 
         hits: dict[str, float] = {}
         for keyword, weight in include.items():
-            if normalize_text(str(keyword)) in blob:
+            if _contains_term(blob, str(keyword)):
                 hits[str(keyword)] = float(weight)
 
         if not hits:

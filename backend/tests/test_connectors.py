@@ -284,6 +284,26 @@ class TestClientSideFiltering:
         probe.pages = [_page()]
         assert _run(probe, TenderFilters(excluded_keywords=["développement"])).items_found == 0
 
+    def test_keywords_match_regardless_of_accents(self):
+        """A user types "developpement"; the portal writes "développement".
+        Matching the raw strings drops a real hit over a diacritic — which in a
+        French-language procurement tool is a daily occurrence, not an edge
+        case."""
+        probe = _Probe(_config())
+        probe.pages = [_page()]
+        probe.records_per_page = 2
+
+        assert _run(probe, TenderFilters(keywords=["developpement"])).items_found == 2
+        assert _run(probe, TenderFilters(keywords=["DÉVELOPPEMENT"])).items_found == 2
+
+    def test_an_unmatched_keyword_still_excludes(self):
+        """Folding must not turn matching into "everything matches"."""
+        probe = _Probe(_config())
+        probe.pages = [_page()]
+        probe.records_per_page = 2
+
+        assert _run(probe, TenderFilters(keywords=["carburant"])).items_found == 0
+
     def test_a_filtered_out_run_is_distinguishable_from_a_blind_one(self):
         """`items_found: 0` is ambiguous on its own — it reads the same whether
         the filters matched nothing or the selectors broke and we saw nothing.
@@ -510,6 +530,95 @@ class TestFixtureConnectorEndToEnd:
                    for t in outcome.tenders)
 
 
+class TestTunepsSearchForm:
+    """Driving the portal's own form instead of filtering afterwards.
+
+    Measured against the live portal: searching "logiciel" server-side returns
+    181 matches over 2 pages in 14 s. Filtering the same term locally read 200
+    notices over 20 pages in 47 s and matched none of them, because TUNEPS is
+    overwhelmingly public works and the software tenders sit deeper than any
+    sane page cap.
+    """
+
+    def _connector(self):
+        from app.connectors.tuneps.connector import TunepsConnector
+
+        return TunepsConnector(load_connector_config("tuneps"))
+
+    def _actions(self, connector, **kwargs):
+        return connector._search_actions(TenderFilters(**kwargs))
+
+    def test_a_keyword_is_typed_into_the_portals_search_field(self):
+        connector = self._connector()
+        actions = self._actions(connector, keywords=["logiciel"])
+        fills = [a for a in actions if a["type"] == "fill"]
+
+        assert fills and fills[0]["value"] == "logiciel"
+        assert "Objet A.O" in fills[0]["selector"]
+        assert any(a["type"] == "click" for a in actions)
+        assert "keywords" in connector._filter_application.server_side
+
+    def test_filling_the_search_field_is_mandatory(self):
+        """A fill that silently failed would return the whole catalogue, and the
+        run would report those results as matching the user's criteria. Better
+        to fail loudly than to answer the wrong question."""
+        actions = self._actions(self._connector(), keywords=["logiciel"])
+
+        assert all(a.get("required") for a in actions if a["type"] in {"fill", "click"})
+
+    def test_or_semantics_are_never_pushed_to_a_single_field(self):
+        """The form has one free-text box. With "match any keyword", sending one
+        term would EXCLUDE tenders matching only the others — wrong results
+        delivered confidently. So nothing is pushed and filtering stays local."""
+        connector = self._connector()
+        actions = self._actions(
+            connector, keywords=["logiciel", "maintenance"], keywords_any=True
+        )
+
+        assert not [a for a in actions if a["type"] == "fill"]
+        assert connector._filter_application.server_side == []
+        assert "keywords" in connector._filter_application.client_side
+
+    def test_and_semantics_push_one_term_and_keep_the_rest_local(self):
+        """Every result must contain every term, so sending one narrows without
+        losing anything; the remainder is applied after normalisation."""
+        connector = self._connector()
+        self._actions(connector, keywords=["logiciel", "maintenance"])
+        application = connector._filter_application
+
+        assert "keywords" in application.server_side
+        assert "keywords" in application.client_side
+
+    def test_the_search_runs_before_the_page_size_is_raised(self):
+        """Submitting resets the paginator, so a page size chosen first would be
+        discarded and the crawl would silently fall back to ten rows a page."""
+        actions = self._actions(self._connector(), keywords=["logiciel"])
+        kinds = [a["type"] for a in actions]
+
+        assert kinds.index("click") < kinds.index("material_select")
+
+    def test_a_material_dropdown_is_not_driven_as_a_native_select(self):
+        """Angular Material renders options into a detached overlay, so
+        `select_option` silently does nothing at all."""
+        actions = self._actions(self._connector(), keywords=["logiciel"])
+        selects = [a for a in actions if "select" in a["type"]]
+
+        assert selects and all(a["type"] == "material_select" for a in selects)
+
+    def test_a_larger_page_is_requested_even_without_filters(self):
+        """Twenty times fewer page loads for the same rows — for TUNEPS too."""
+        actions = self._actions(self._connector())
+
+        assert [a for a in actions if a["type"] == "material_select"]
+
+    def test_criteria_the_form_cannot_express_are_reported_as_local(self):
+        connector = self._connector()
+        self._actions(connector, countries=["Tunisie"], excluded_keywords=["travaux"])
+
+        assert "countries" in connector._filter_application.client_side
+        assert "excluded_keywords" in connector._filter_application.client_side
+
+
 class TestTunepsNormalisation:
     def _record(self, **fields) -> RawRecord:
         return RawRecord(
@@ -603,3 +712,109 @@ class TestTunepsNormalisation:
         urls = {r.source_url for r in records}
         assert len(urls) == 2                       # distinct, not collapsed
         assert "133063" in records[0].source_url
+
+
+class TestResultLimitStopsBeforeTheNextFetch:
+    """A filled quota must not cost one more page.
+
+    The limit used to be checked only when starting to process a record, so a
+    quota filled by a page's last item still triggered a fetch of the next page
+    before anything noticed. With J360 serving 20 results per page and the UI
+    defaulting to 20, that was every search paying for a page it discarded —
+    on an account that is metered and rate-limited to one request every two
+    seconds.
+    """
+
+    def test_a_quota_filled_by_the_last_row_does_not_fetch_another_page(self):
+        probe = _Probe(_config())
+        probe.pages = [_page(), _page(), _page()]
+        probe.records_per_page = 5
+
+        outcome = _run(probe, TenderFilters(max_results_per_source=5))
+
+        assert outcome.items_found == 5
+        assert outcome.records_parsed == 5          # one page read, not two
+        assert outcome.pages_fetched == 1
+        assert outcome.stop_reason == "results_satisfied"
+
+    def test_a_quota_filled_mid_page_still_stops_there(self):
+        probe = _Probe(_config())
+        probe.pages = [_page(), _page()]
+        probe.records_per_page = 5
+
+        outcome = _run(probe, TenderFilters(max_results_per_source=3))
+
+        assert outcome.items_found == 3
+        assert outcome.pages_fetched == 1
+
+    def test_without_a_limit_every_page_is_read(self):
+        probe = _Probe(_config())
+        probe.pages = [_page(), _page()]
+        probe.records_per_page = 2
+
+        outcome = _run(probe)
+
+        assert outcome.records_parsed == 4
+        assert outcome.stop_reason in {"source_exhausted", "page_cap"}
+
+
+class TestTunepsDeepLink:
+    """The detail view is a two-segment PATH, read off the portal by clicking a
+    row: /portail/offres/details/<epBidMasterId>/<N° A.O>.
+
+    Verified in a real browser against the live portal:
+        /details/132389/20260701143      -> "Fiche détails", the real tender
+        /details?epBidMasterId=132389    -> "404 Réception"
+
+    A guessed URL that 404s is worse than no link: it reads as a tender that
+    has been withdrawn.
+    """
+
+    def _connector(self):
+        from app.connectors.tuneps.connector import TunepsConnector
+
+        return TunepsConnector(load_connector_config("tuneps"))
+
+    def _record(self, html: str):
+        page = FetchedPage(
+            url="https://www.tuneps.tn/portail/offres",
+            status_code=200,
+            content=html.encode("utf-8"),
+            encoding="utf-8",
+        )
+        return self._connector().parse(page)
+
+    def _row(self, master_id: str = "132389", reference: str = "20260701143") -> str:
+        return f"""
+        <table><tbody><tr class="mat-row">
+          <td class="cdk-column-bidNo">{reference}</td>
+          <td class="cdk-column-bidInstNm">Ministère</td>
+          <td class="cdk-column-publicDt">01/07/2026</td>
+          <td class="cdk-column-bidNmFr">Acquisition de logiciels</td>
+          <td class="cdk-column-bdRecvEndDt">17/08/2026 09:00</td>
+          <td class="cdk-column-epBidMasterId">{master_id}</td>
+        </tr></tbody></table>"""
+
+    def test_the_link_uses_the_two_segment_path(self):
+        record = self._record(self._row())[0]
+
+        assert record.source_url == (
+            "https://www.tuneps.tn/portail/offres/details/132389/20260701143"
+        )
+
+    def test_the_query_parameter_form_is_never_produced(self):
+        """Regression guard: that form returns the portal's own 404 page."""
+        record = self._record(self._row())[0]
+
+        assert "epBidMasterId=" not in record.source_url
+
+    def test_each_row_gets_its_own_link(self):
+        html = (
+            "<table><tbody>"
+            + self._row("111", "20260000111").split("<tbody>")[1].split("</tbody>")[0]
+            + self._row("222", "20260000222").split("<tbody>")[1].split("</tbody>")[0]
+            + "</tbody></table>"
+        )
+        urls = {r.source_url for r in self._record(html)}
+
+        assert len(urls) == 2

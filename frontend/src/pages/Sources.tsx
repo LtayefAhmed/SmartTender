@@ -4,7 +4,7 @@ import type { ConnectorInfo, Source } from "../api/types";
 import { TopBar } from "../components/Layout";
 import { Badge, Card, Dot, Loading } from "../components/ui";
 import { useToast } from "../components/toast";
-import { fmtDuration, fmtRelative, healthColor } from "../lib/format";
+import { fmtDuration, fmtRelative, healthColor, isInactiveByDesign, unavailableLabel } from "../lib/format";
 
 export function Sources() {
   const toast = useToast();
@@ -79,8 +79,15 @@ export function Sources() {
                     {s.strategy && <span className="badge gray tiny">{s.strategy}</span>}
                     {s.country && <span>{s.country}</span>}
                     {info && !info.available && (
-                      <span className="badge violet tiny" title={info.missing_credentials?.join(", ")}>
-                        {info.unavailable_reason}
+                      <span
+                        className="badge violet tiny"
+                        title={
+                          info.missing_credentials?.length
+                            ? info.missing_credentials.join(", ")
+                            : (info.unavailable_reason ?? "")
+                        }
+                      >
+                        {unavailableLabel(info.unavailable_reason)}
                       </span>
                     )}
                   </div>
@@ -125,7 +132,11 @@ export function Sources() {
                     <Metric label="Dernier" value={fmtRelative(s.last_run_at)} />
                   </div>
 
-                  {s.last_error_type && (
+                  {/* An error kept on screen for a source that can no longer run
+                      reads as an active incident. For one that is inactive by
+                      design it is stale history — here, the failure that existed
+                      before the source began declaring itself unavailable. */}
+                  {s.last_error_type && !isInactiveByDesign(info?.unavailable_reason) && (
                     <div className="tiny" style={{ color: "var(--red)" }}>
                       Dernière erreur : {s.last_error_type}
                     </div>

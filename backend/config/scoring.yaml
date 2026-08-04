@@ -9,17 +9,21 @@
 # `version` is persisted alongside every computed score so that any ranking can
 # be reproduced or explained after the fact. BUMP IT whenever you edit weights.
 # =============================================================================
-version: "2026.1"
+version: "2026.3"
 name: "inetum-default"
 
 # Weights need not sum to 1: the engine normalises over the criteria that
 # actually produced a value, so a missing budget never penalises a tender.
 weights:
-  field_of_work: 0.40
-  deadline_proximity: 0.25
-  keywords: 0.15
-  budget: 0.10
-  location: 0.05
+  field_of_work: 0.38
+  deadline_proximity: 0.22
+  keywords: 0.13
+  budget: 0.09
+  # Raised from 0.05. At that level a software tender in a country Inetum does
+  # not operate in scored within a rounding error of one in Tunis, which made
+  # the criterion decorative. 0.13 lets geography separate two otherwise equal
+  # opportunities without ever outweighing whether the work is ours to do.
+  location: 0.13
   organization: 0.05
   # Secondary signals — enabled with a non-zero weight when the history table
   # has enough volume to be meaningful.
@@ -45,65 +49,165 @@ bands:
 criteria:
   # ---------------------------------------------------------------------------
   field_of_work:
-    # Semantic proximity between the tender text and the company's declared
-    # fields of activity. Uses the configured semantic backend.
+    # ─────────────────────────────────────────────────────────────────────────
+    # Inetum Tunisie's actual service catalogue — the seven domains from the
+    # capability deck. This is the definition of "is this tender ours", and the
+    # highest-weighted criterion in the profile.
+    #
+    # Each domain carries TWO vocabularies, and the distinction is the whole
+    # point:
+    #
+    #   `terms`         What Inetum calls its own offering: SAGE X3, S4/HANA,
+    #                   Copilot. Used for SCORING, against a tender's full text
+    #                   (title, description, and any extracted PDF), where a
+    #                   buyer naming a product is decisive evidence.
+    #
+    #   `search_terms`  What a public buyer actually writes in a notice title:
+    #                   "progiciel de gestion intégré", "gestion des ressources
+    #                   humaines". Used for SEARCHING the portals.
+    #
+    # Searching TUNEPS for "SAGE X3" returns nothing — Tunisian notices are not
+    # written in a vendor's vocabulary. Scoring on "progiciel" alone would be
+    # too vague to separate an ERP project from a stationery order. Keeping the
+    # two apart is what makes both work.
+    # ─────────────────────────────────────────────────────────────────────────
     profiles:
-      - name: "Intégration de systèmes d'information"
+      - name: "SAGE"
         weight: 1.0
+        # ⚠ The bare token "SAGE" is deliberately absent. In French public
+        # procurement a *SAGE* is a Schéma d'Aménagement et de Gestion des Eaux
+        # — a water-management plan. Matching it alone scored a soil-survey
+        # contract ("le SAGE de la Lys") at 0.81, ahead of every real IT tender.
+        # Only the qualified product names identify the vendor unambiguously.
         terms:
-          - "intégration de systèmes"
-          - "système d'information"
+          - "SAGE X3"
+          - "SAGE XRT"
+          - "SAGE 1000"
+          - "SAGE FRP"
+          - "progiciel Sage"
+          - "solution Sage"
+          - "SXA"
+          - "Youdoc"
+          - "WMS"
+          - "gestion d'entrepôt"
+        search_terms:
+          - "progiciel de gestion"
           - "ERP"
-          - "SAP"
-          - "middleware"
-          - "urbanisation SI"
-      - name: "Développement logiciel & applications"
+          - "gestion intégrée"
+          - "gestion commerciale"
+          - "gestion d'entrepôt"
+
+      - name: "SIRH"
         weight: 1.0
         terms:
-          - "développement d'applications"
-          - "logiciel sur mesure"
-          - "application web"
-          - "application mobile"
-          - "Java"
-          - "Angular"
-          - "React"
-          - ".NET"
-          - "Python"
-      - name: "Infrastructure, Cloud & DevOps"
-        weight: 0.9
+          - "SIRH"
+          - "Sage Factorial"
+          - "SuccessFactors"
+          - "AGIRH"
+          - "gestion des ressources humaines"
+          - "gestion de la paie"
+        search_terms:
+          - "ressources humaines"
+          - "SIRH"
+          - "paie"
+          - "gestion du personnel"
+
+      - name: "SAP"
+        weight: 1.0
         terms:
-          - "infrastructure informatique"
-          - "cloud"
-          - "AWS"
+          - "SAP"
+          - "S/4HANA"
+          - "S4HANA"
+          - "HANA"
+          - "Ariba"
+          - "SAP CX"
+        search_terms:
+          - "SAP"
+          - "progiciel de gestion"
+          - "ERP"
+
+      - name: "Microsoft"
+        weight: 1.0
+        terms:
+          - "Microsoft"
+          - "Dynamics"
+          - "CRM"
+          - "Power Platform"
+          - "Power BI"
           - "Azure"
-          - "Kubernetes"
-          - "DevOps"
-          - "virtualisation"
-          - "datacenter"
-      - name: "Cybersécurité"
+          - "Microsoft 365"
+          - "M365"
+          - "Copilot"
+          - "SharePoint"
+        search_terms:
+          - "CRM"
+          - "relation client"
+          - "Microsoft"
+          - "Azure"
+          - "messagerie collaborative"
+
+      - name: "Application Services"
+        weight: 1.0
+        terms:
+          - "tierce maintenance applicative"
+          - "TMA"
+          - "maintenance applicative"
+          - "portail"
+          - "solutions digitales"
+          - "assistance technique"
+          - "mise à disposition de ressources"
+          - "infogérance"
+          - "infrastructure"
+        search_terms:
+          - "maintenance applicative"
+          - "développement"
+          - "assistance technique"
+          - "portail web"
+          - "infogérance"
+          - "logiciel"
+
+      - name: "Digital consulting"
         weight: 0.9
         terms:
-          - "cybersécurité"
-          - "sécurité des systèmes d'information"
-          - "SOC"
-          - "audit de sécurité"
-          - "ISO 27001"
-      - name: "Data, BI & Intelligence Artificielle"
-        weight: 0.85
+          - "architecture d'entreprise"
+          - "architecture technique"
+          - "urbanisation"
+          - "DevOps"
+          - "API management"
+          - "RPA"
+          - "automatisation des processus"
+          - "monitoring"
+          - "observabilité"
+          - "schéma directeur"
+        search_terms:
+          - "schéma directeur"
+          - "architecture"
+          - "conseil"
+          - "audit informatique"
+          - "transformation digitale"
+
+      - name: "IA & Data"
+        weight: 0.95
         terms:
+          - "data management"
+          - "gouvernance des données"
+          - "data visualisation"
+          - "dataviz"
           - "business intelligence"
+          - "décisionnel"
           - "entrepôt de données"
+          - "datawarehouse"
           - "big data"
           - "intelligence artificielle"
           - "machine learning"
-          - "datawarehouse"
-      - name: "Conseil & AMOA"
-        weight: 0.7
-        terms:
-          - "assistance à maîtrise d'ouvrage"
-          - "AMOA"
-          - "conseil en transformation digitale"
-          - "schéma directeur"
+          - "FABLAB"
+        search_terms:
+          - "intelligence artificielle"
+          - "données"
+          - "décisionnel"
+          - "business intelligence"
+          - "entrepôt de données"
+
     # Below this similarity the criterion is considered a non-match (0.0).
     floor: 0.15
 
@@ -166,15 +270,27 @@ criteria:
 
   # ---------------------------------------------------------------------------
   location:
+    # Home market first, then the territories the team actually watches.
+    # Mauritania sits high because it is half of the standing J360 search
+    # (countries=TN,MR) — it was absent from this list entirely, so every
+    # Mauritanian tender was scored as an unknown country at 0.3 while the
+    # team was actively monitoring it.
     preferred:
       "Tunisie": 1.0
+      "Tunisia": 1.0
       "Tunis": 1.0
-      "France": 0.85
-      "Maroc": 0.75
-      "Algérie": 0.7
-      "Sénégal": 0.6
-      "Côte d'Ivoire": 0.6
+      "Mauritanie": 0.85
+      "Maroc": 0.8
+      "Algérie": 0.75
+      "Libye": 0.65
+      "France": 0.75          # Inetum group — delivery is credible
       "Belgique": 0.6
+      "Sénégal": 0.65
+      "Côte d'Ivoire": 0.65
+      "Mali": 0.55
+      "Burkina Faso": 0.55
+    # A country nobody listed is not disqualifying — it is simply unproven, and
+    # a strong enough technical fit can still carry it.
     default_score: 0.3
     unknown_score: 0.4
 

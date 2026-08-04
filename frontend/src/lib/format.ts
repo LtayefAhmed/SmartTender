@@ -104,3 +104,41 @@ export function statusColor(status: string): string {
     }[status] ?? "gray"
   );
 }
+
+/**
+ * Turns a connector's machine-readable unavailability code into a sentence.
+ *
+ * These codes are contracts between the registry and the API — stable, greppable,
+ * and meant for logs. Rendering them raw in the interface ("fixtures_unavailable")
+ * asks the person reading to know the codebase, and makes a deliberately
+ * inactive source look like a failure.
+ */
+export function unavailableLabel(reason: string | null | undefined): string {
+  if (!reason) return "";
+  if (reason.startsWith("not_enabled_in_env:")) {
+    return `Réservée à l'environnement ${reason.split(":")[1]}`;
+  }
+  const labels: Record<string, string> = {
+    fixtures_unavailable: "Source de test — non embarquée dans l'image de production",
+    credentials_missing: "Identifiants non configurés",
+    disabled: "Désactivée manuellement",
+    circuit_open: "Disjoncteur ouvert — trop d'échecs consécutifs",
+  };
+  return labels[reason] ?? reason;
+}
+
+/**
+ * Whether a source is inactive by design rather than broken.
+ *
+ * Both look identical on a card — same grey badge, same zero counters — but one
+ * is a setup step and the other is an incident. Only the second deserves the
+ * error history to stay on screen.
+ */
+export function isInactiveByDesign(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return (
+    reason === "fixtures_unavailable" ||
+    reason === "disabled" ||
+    reason.startsWith("not_enabled_in_env:")
+  );
+}

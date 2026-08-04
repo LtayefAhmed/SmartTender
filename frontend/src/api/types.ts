@@ -117,6 +117,8 @@ export interface RunExtra {
   records_parsed?: number;
   items_filtered_out?: number;
   items_duplicate_in_run?: number;
+  /** Why the crawl ended: source_exhausted | results_satisfied | page_cap | deadline */
+  stop_reason?: string | null;
   skip_reason?: string | null;
   filter_application?: {
     client_side?: string[];
@@ -230,6 +232,10 @@ export interface AcceptedResponse {
 
 export interface DashboardStats {
   total_tenders: number;
+  /** Deadline not yet passed — the actionable figure. */
+  open_tenders?: number;
+  /** Kept for dedup and win/loss history; never deleted on expiry. */
+  archived_tenders?: number;
   ingested_last_24h: number;
   relevant_closing_within_7_days: number;
   by_band: Record<string, number>;
@@ -290,4 +296,14 @@ export interface Health {
   uptime_seconds: number;
   degraded_components: string[];
   checks: Record<string, { ok: boolean; latency_ms: number; error?: string | null }>;
+}
+
+/** One of Inetum's service domains, served from the scoring profile. */
+export interface BusinessDomain {
+  name: string;
+  weight: number;
+  /** Inetum's own vocabulary (SAGE X3, S/4HANA). Scores tenders; never searched. */
+  expertise: string[];
+  /** A public buyer's vocabulary ("progiciel de gestion"). This is what portals receive. */
+  search_terms: string[];
 }

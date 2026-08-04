@@ -16,9 +16,9 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
-from app.core.enums import JobStatus, SourceHealth, TenderPipelineState
+from app.core.enums import JobStatus, SourceHealth, TenderPipelineState, TenderStatus
 from app.core.identity import as_utc, utc_now
 from app.core.logging import get_logger
 from app.core.metrics import connector_health, queue_size
@@ -34,12 +34,128 @@ logger = get_logger(__name__)
 
 __all__ = [
     "check_connector_health",
+    "close_expired_tenders",
     "collect_queue_metrics",
+    "purge_expired_tenders",
     "purge_old_logs",
     "reconcile_stuck_jobs",
     "requeue_stalled_tenders",
     "sync_source_registry",
 ]
+
+
+@celery_app.task(
+    base=PipelineTask,
+    bind=True,
+    name="app.workers.tasks.maintenance.close_expired_tenders",
+    queue="maintenance",
+)
+def close_expired_tenders(self: PipelineTask, grace_hours: int = 0) -> dict[str, Any]:
+    """Move tenders past their submission deadline to CLOSED.
+
+    Without this, a tender stays OPEN forever and the dashboard's headline
+    figure slowly becomes a count of everything ever seen rather than of what
+    can still be bid on — which is the only number a bid manager actually acts
+    on. Portals rarely publish a withdrawal notice, so the deadline we already
+    hold is the signal.
+
+    Nothing is deleted. A closed tender is still evidence: it feeds duplicate
+    detection when the same notice is re-published, and it is the raw material
+    for the win/loss history that later scoring and the CV-matching module
+    depend on. Expiry is a status change, never a purge.
+    """
+    cutoff = utc_now() - timedelta(hours=grace_hours)
+    with session_scope() as session:
+        result = session.execute(
+            update(Tender)
+            .where(
+                Tender.deadline.is_not(None),
+                Tender.deadline < cutoff,
+                Tender.status.in_([TenderStatus.OPEN.value, TenderStatus.UNKNOWN.value]),
+            )
+            .values(status=TenderStatus.CLOSED.value)
+        )
+        closed = result.rowcount or 0
+
+    if closed:
+        logger.info("maintenance.tenders_closed", count=closed)
+    return {"closed": closed}
+
+
+@celery_app.task(
+    base=PipelineTask,
+    bind=True,
+    name="app.workers.tasks.maintenance.purge_expired_tenders",
+    queue="maintenance",
+)
+def purge_expired_tenders(
+    self: PipelineTask, retention_months: int = 12, batch: int = 2_000
+) -> dict[str, Any]:
+    """Delete tenders whose deadline passed more than `retention_months` ago.
+
+    The only task permitted to delete tenders, and the counterpart to
+    `close_expired_tenders`: expiry changes a status, this reclaims the row
+    once the record has stopped being useful.
+
+    Twelve months is the configured window. The trade-off is worth naming: an
+    archived tender is what duplicate detection compares against when the same
+    notice is re-published, and it is the raw material for the win/loss history
+    that later scoring depends on. Past a year both uses fade — a re-issued
+    contract is a new opportunity, not a duplicate — but shortening this window
+    further would start costing signal.
+
+    Documents in object storage are removed with the rows; nothing is left
+    orphaned in MinIO paying for itself indefinitely.
+    """
+    from app.db.models.tender import TenderDocument
+
+    cutoff = utc_now() - timedelta(days=int(retention_months * 30.44))
+    storage_keys: list[str] = []
+
+    with session_scope() as session:
+        ids = list(
+            session.execute(
+                select(Tender.id)
+                .where(Tender.deadline.is_not(None), Tender.deadline < cutoff)
+                .limit(batch)
+            )
+            .scalars()
+            .all()
+        )
+        if not ids:
+            return {"purged": 0}
+
+        storage_keys = [
+            key
+            for key in session.execute(
+                select(TenderDocument.storage_key).where(TenderDocument.tender_id.in_(ids))
+            )
+            .scalars()
+            .all()
+            if key
+        ]
+        session.execute(delete(Tender).where(Tender.id.in_(ids)))
+
+    # Storage is cleaned after the rows are gone: a delete that fails here
+    # leaves an orphaned object, which is wasteful; the reverse would leave a
+    # row pointing at nothing, which looks like corruption.
+    if storage_keys:
+        try:
+            from app.services.storage import get_storage
+
+            storage = get_storage()
+            for key in storage_keys:
+                storage.delete(key)
+        except Exception as exc:
+            logger.warning("maintenance.purge_storage_failed", error=str(exc)[:200])
+
+    logger.info(
+        "maintenance.tenders_purged",
+        count=len(ids),
+        documents=len(storage_keys),
+        retention_months=retention_months,
+    )
+    return {"purged": len(ids), "documents": len(storage_keys)}
 
 
 @celery_app.task(

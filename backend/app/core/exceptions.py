@@ -26,6 +26,7 @@ from typing import Any
 
 __all__ = [
     "AuthenticationError",
+    "BrowserActionError",
     "CircuitOpenError",
     "ConfigurationError",
     "ConnectorError",
@@ -226,6 +227,24 @@ class ParsingError(ConnectorError):
     code = "parsing_error"
     http_status = 422
     retryable = False
+    alerting = True
+
+
+class BrowserActionError(ConnectorError):
+    """A required interaction with a rendered page could not be completed.
+
+    Raised only for actions the result *depends* on — filling a search field,
+    submitting a form. Optional interactions (dismissing a banner that was not
+    shown) stay silent by design.
+
+    The distinction matters because the failure is invisible otherwise: a
+    search field that was never filled returns the portal's entire catalogue,
+    and a crawl would report those unfiltered results as though they matched
+    the user's criteria.
+    """
+
+    code = "browser_action_failed"
+    retryable = True
     alerting = True
 
 

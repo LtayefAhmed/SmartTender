@@ -49,6 +49,10 @@ QUEUES = tuple(
 #: is reviewable in one place.
 TASK_ROUTES = {
     "app.workers.tasks.scraping.*": {"queue": "scraping"},
+    # Enrichment opens a portal page — for TUNEPS that means rendering an
+    # Angular app in Chromium, which only the scraping worker's image carries.
+    # Routed by *capability*, not by which stage of the pipeline it belongs to.
+    "app.workers.tasks.pipeline.enrich_tender": {"queue": "scraping"},
     "app.workers.tasks.pipeline.parse_*": {"queue": "parsing"},
     "app.workers.tasks.pipeline.ocr_*": {"queue": "ocr"},
     "app.workers.tasks.pipeline.extract_*": {"queue": "ai"},

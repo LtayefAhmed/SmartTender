@@ -134,9 +134,9 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 def cmd_seed(args: argparse.Namespace) -> int:
     """Create the default schedules and a demo notification profile."""
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
-    from app.core.enums import ScheduleKind
+    from app.core.enums import RelevanceBand, ScheduleKind
     from app.core.identity import utc_now
     from app.db.models.notification import UserPreference
     from app.db.models.schedule import Schedule, ScheduleChangeSentinel
@@ -162,6 +162,7 @@ def cmd_seed(args: argparse.Namespace) -> int:
     ]
 
     created = 0
+    profile_created = False
     with session_scope() as session:
         for spec in defaults:
             exists = session.execute(
@@ -177,16 +178,27 @@ def cmd_seed(args: argparse.Namespace) -> int:
                 select(UserPreference.id).where(UserPreference.user_id == args.user)
             ).first()
             if not exists:
+                # Deliberately unrestricted apart from the relevance floor.
+                # Seeding sectors=["Technologies de l'information"] reads well
+                # and notifies nothing: portal listings carry no sector field,
+                # and a title says "logiciel", never that phrase. A default
+                # that silently matches zero tenders makes a working notifier
+                # look broken. Relevance is already the filter that matters —
+                # the user narrows from there.
                 session.add(
                     UserPreference(
                         user_id=args.user,
                         email=args.email,
                         display_name=args.user,
-                        sectors=["Technologies de l'information"],
-                        countries=["Tunisie"],
+                        min_relevance_band=RelevanceBand.RELEVANT.value,
                         channels=["in_app", "email"],
                     )
                 )
+                profile_created = True
+
+        existing_profiles = session.execute(
+            select(func.count(UserPreference.id)).where(UserPreference.active.is_(True))
+        ).scalar_one()
 
         sentinel = session.get(ScheduleChangeSentinel, 1)
         if sentinel is None:
@@ -195,6 +207,18 @@ def cmd_seed(args: argparse.Namespace) -> int:
             sentinel.last_update = utc_now()
 
     print(f"Seed complete: {created} schedule(s) created.")
+    if profile_created:
+        print(f"Notification profile created for '{args.user}'.")
+    elif not existing_profiles:
+        # Notifications are built per active preference. With none, the pipeline
+        # runs to completion and announces nothing — which looks exactly like a
+        # broken notifier. Say so here rather than let it be discovered later.
+        print(
+            "\nNo notification profile exists, so NO alerts will be raised for\n"
+            "relevant tenders. Create one with:\n"
+            "    smarttender-admin seed --user <name> --email <address>\n"
+            "or from the Preferences screen in the app."
+        )
     return 0
 
 
@@ -381,7 +405,14 @@ def build_parser() -> argparse.ArgumentParser:
     score.set_defaults(func=cmd_score)
 
     seed = subparsers.add_parser("seed", help="Create default schedules.")
-    seed.add_argument("--user", help="Also create a notification profile for this user id.")
+    seed.add_argument(
+        "--user",
+        help=(
+            "Also create a notification profile for this user id. Must match the "
+            "identity the UI sends as X-User-Id (default: 'operator'), or the "
+            "Notifications screen stays empty while alerts accumulate elsewhere."
+        ),
+    )
     seed.add_argument("--email", default=None)
     seed.set_defaults(func=cmd_seed)
 

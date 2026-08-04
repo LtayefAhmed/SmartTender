@@ -25,11 +25,13 @@ from app.schemas.filters import FilterApplication
 
 __all__ = [
     "ConnectorOutcome",
+    "DetailResult",
     "DocumentRef",
     "FetchedPage",
     "ItemFailure",
     "NormalizedTender",
     "RawRecord",
+    "TenderDetailRequest",
 ]
 
 
@@ -156,6 +158,61 @@ class DocumentRef(BaseModel):
     size_bytes: int | None = None
 
 
+class TenderDetailRequest(BaseModel):
+    """What a connector needs to locate one notice's own page.
+
+    Carries identifiers rather than a URL because portals differ in what they
+    key on: J360 addresses an announcement by its numeric id, TUNEPS needs both
+    its internal id and the published reference. Passing the stored URL alone
+    would work for neither if the format ever changed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tender_id: str
+    external_id: str | None = None
+    reference: str | None = None
+    source_url: str | None = None
+
+
+class DetailResult(BaseModel):
+    """What opening a notice's own page added.
+
+    Every field is optional and only non-empty ones are applied: a detail page
+    that omits the budget must never blank a budget the listing did supply.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str | None = None
+    estimated_budget: Decimal | None = None
+    currency: str | None = None
+    cpv_codes: list[str] = Field(default_factory=list)
+    procurement_type: str | None = None
+    buyer: str | None = None
+    location: str | None = None
+    contact_email: str | None = None
+    deadline: datetime | None = None
+    documents: list[DocumentRef] = Field(default_factory=list)
+    #: Links to the notice on the portal that originally published it. J360
+    #: aggregates, so these point at TED, BOAMP or marches-publics — where the
+    #: actual tender documents live.
+    source_links: list[str] = Field(default_factory=list)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.description,
+                self.estimated_budget,
+                self.cpv_codes,
+                self.documents,
+                self.source_links,
+                self.extra,
+            )
+        )
+
+
 class NormalizedTender(BaseModel):
     """The canonical shape every connector must produce.
 
@@ -273,6 +330,12 @@ class ConnectorOutcome:
     items_filtered_out: int = 0
     items_duplicate_in_run: int = 0
 
+    #: Why the crawl stopped. "The source had nothing more" and "we hit our own
+    #: safety cap" produce the same small result count and mean opposite things
+    #: — one is the whole truth, the other is a partial answer the operator
+    #: should be told about before they conclude the portal is empty.
+    stop_reason: str | None = None
+
     error_type: str | None = None
     error_message: str | None = None
     error_context: dict[str, Any] = field(default_factory=dict)
@@ -297,6 +360,7 @@ class ConnectorOutcome:
             "records_parsed": self.records_parsed,
             "items_filtered_out": self.items_filtered_out,
             "items_duplicate_in_run": self.items_duplicate_in_run,
+            "stop_reason": self.stop_reason,
             "item_failures": len(self.item_failures),
             "pages_fetched": self.pages_fetched,
             "http_requests": self.http_requests,

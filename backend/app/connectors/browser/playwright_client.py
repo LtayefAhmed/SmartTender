@@ -24,7 +24,11 @@ from types import TracebackType
 from typing import Any
 
 from app.connectors.models import FetchedPage
-from app.core.exceptions import ConfigurationError, SourceUnavailableError
+from app.core.exceptions import (
+    BrowserActionError,
+    ConfigurationError,
+    SourceUnavailableError,
+)
 from app.core.logging import get_logger
 from app.core.security import assert_public_url, redact_url
 
@@ -227,6 +231,7 @@ class BrowserRenderer:
         max_pages: int,
         wait_until: str = "domcontentloaded",
         settle_ms: int = 1500,
+        actions: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[FetchedPage]:
         """Drive a single-page-app paginator, yielding each page's rendered HTML.
 
@@ -236,6 +241,11 @@ class BrowserRenderer:
         again. Waiting on a *content change* (the first row's text) rather than
         a fixed delay is what makes this reliable — the click returns before the
         new data has rendered.
+
+        ``actions`` run once, after the table first appears and before anything
+        is read — that is where a search form gets filled. Doing it here rather
+        than filtering afterwards is the difference between the portal
+        returning a hundred matches and us discarding a hundred non-matches.
 
         Yields one ``FetchedPage`` per page. Stops at ``max_pages``, when the
         next button is disabled or absent, or when the rows stop changing.
@@ -266,6 +276,22 @@ class BrowserRenderer:
                     content=html.encode("utf-8"), encoding="utf-8", rendered=True,
                 )
                 return
+
+            if actions:
+                before = await self._first_row_signature(page, rows_selector)
+                for action in actions:
+                    await self._perform(page, action)
+                # A search that returns the same first row is not proof of
+                # failure — the top hit may genuinely be unchanged — so this
+                # only waits, and lets the row count speak for itself.
+                await self._wait_for_row_change(
+                    page, rows_selector, before, timeout_ms=self.default_timeout_ms
+                )
+                logger.info(
+                    "browser.form_applied",
+                    connector=self.connector_key,
+                    actions=len(actions),
+                )
 
             for page_index in range(max_pages):
                 await page.wait_for_timeout(min(settle_ms, 8000))
@@ -345,6 +371,17 @@ class BrowserRenderer:
                 await page.fill(selector, str(action.get("value") or ""))
             elif kind == "select" and selector:
                 await page.select_option(selector, str(action.get("value") or ""))
+            elif kind == "material_select" and selector:
+                # Angular Material renders its options into a detached overlay,
+                # so `select_option` — which needs a real <select> — silently
+                # does nothing. The interaction has to be a click on the
+                # trigger followed by a click on the option.
+                await page.click(selector, timeout=self.default_timeout_ms)
+                await page.wait_for_selector("mat-option", timeout=self.default_timeout_ms)
+                value = str(action.get("value") or "")
+                await page.click(
+                    f'mat-option:has-text("{value}")', timeout=self.default_timeout_ms
+                )
             elif kind == "wait_for_selector" and selector:
                 await page.wait_for_selector(selector)
             elif kind == "wait":
@@ -355,7 +392,16 @@ class BrowserRenderer:
                 await page.press(selector, str(action.get("key") or "Enter"))
         except Exception as exc:
             # An optional interaction that fails (a cookie banner that was not
-            # shown) must not abort the page.
+            # shown) must not abort the page. A *required* one must — if
+            # filling a search field fails, the portal returns everything and
+            # the caller would report an unfiltered crawl as a filtered one.
+            if action.get("required"):
+                raise BrowserActionError(
+                    f"Required browser action '{kind}' failed on {selector!r}.",
+                    connector=self.connector_key,
+                    context={"action": kind, "selector": str(selector)},
+                    cause=exc,
+                ) from exc
             logger.info(
                 "browser.action_failed",
                 connector=self.connector_key,

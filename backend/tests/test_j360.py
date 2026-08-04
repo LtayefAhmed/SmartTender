@@ -12,12 +12,14 @@ from __future__ import annotations
 import base64
 import json
 import time
+from decimal import Decimal
 
 import pytest
 
 from app.connectors.config import load_connector_config
 from app.connectors.j360.connector import J360Connector
 from app.connectors.models import FetchedPage
+from app.schemas.filters import TenderFilters
 
 # --- real response, trimmed ---------------------------------------------------
 J360_RESPONSE = {
@@ -93,6 +95,7 @@ J360_RESPONSE = {
             "amount": None,
             "source_name": "OI - ONU - United Nations Procurement Division",
             "source_domain": "www.un.org",
+            "special_criterion": ["IE_OI_ONG", "INDIV"],
             # The UN lists every eligible country — a catalogue, not a place.
             "execution_places_display": {
                 "type": "countries",
@@ -139,7 +142,9 @@ class TestParsing:
 
         assert len(urls) == 3
         assert "55822711" in records[0].source_url
-        assert records[0].source_url.startswith("https://app.j360.info/#/announce/")
+        assert records[0].source_url.startswith(
+            "https://app.j360.info/#/my-monitoring/announce/"
+        )
 
     def test_three_announcements_survive_in_run_deduplication(self, connector):
         """The in-run dedup key is the *canonical* URL, and J360 addresses
@@ -229,24 +234,47 @@ class TestNormalisation:
 
 
 class TestConfiguration:
-    def test_it_targets_the_real_endpoint(self):
+    def test_it_targets_the_parametrised_search_endpoint(self):
+        """The saved-search endpoint returns a frozen set curated in J360's UI,
+        so our filters could only ever narrow it. `/api/announces` takes the
+        criteria as parameters, which is what makes a keyword search reach the
+        whole catalogue instead of a three-item slice."""
         config = load_connector_config("j360")
+
         assert config.base_url == "https://app.j360.info"
-        assert config.endpoints["search"] == "/api/searches/{search_id}/announces"
+        assert config.endpoints["search"] == "/api/announces"
+        assert config.get("search_mode") == "query"
+        assert config.endpoints["saved_search"] == "/api/searches/{search_id}/announces"
+
+    def test_only_live_tenders_are_requested_by_default(self):
+        """J360's own UI defaults to every announce type, including archives and
+        award results — which is why a browser search surfaces notices closed
+        years ago. A detection tool wants what can still be bid on."""
+        assert load_connector_config("j360").get("default_query")["type"] == "mc"
 
     def test_it_follows_the_drf_next_link(self):
         assert load_connector_config("j360").pagination["mode"] == "next_url"
 
-    def test_detail_downloads_are_disabled_because_they_are_metered(self):
-        """Opening an announcement is a paid action (~€9). An overnight
-        schedule that fetched every detail could generate a large bill."""
-        assert load_connector_config("j360").documents_policy["download"] is False
+    def test_detail_downloads_are_enabled_after_measuring_the_cost(self):
+        """This was disabled on an assumption that measurement disproved.
+
+        /api/me exposes a seat-based quota (additional_user_price per extra
+        USER, has_reached_users_limit) and no announcement counter. Fetching
+        the detail of an unviewed announcement returned 200 with full content
+        and left every counter identical. The detail carries the budget, the
+        full description and the attached files — the material the scorer and
+        the CV-matching module actually need."""
+        assert load_connector_config("j360").documents_policy["download"] is True
 
     def test_it_is_single_threaded_and_slow(self):
+        """The session identifies the account on every request. Volume is what
+        gets noticed, so concurrency stays at one and the rate stays low."""
         config = load_connector_config("j360")
         assert config.http_get("concurrency.per_connector") == 1
         assert config.http_get("rate_limit.requests_per_second") <= 0.5
-        assert config.pagination["max_pages"] <= 5
+        # Now that filtering happens server-side, pages carry matches rather
+        # than candidates — but the cap stays modest on a metered account.
+        assert config.pagination["max_pages"] <= 10
 
     def test_token_refresh_is_configured(self):
         refresh = load_connector_config("j360").auth["token_refresh"]
@@ -257,6 +285,75 @@ class TestConfiguration:
     def test_at_least_one_saved_search_is_defined(self):
         searches = load_connector_config("j360").get("saved_searches")
         assert searches and searches[0]["id"] == 57549
+
+
+class TestServerSideFiltering:
+    """Pinned against a real captured request:
+
+        GET /api/announces?countries=MR&countries=TN&op=AND&order_by=-created
+            &q_simple=[{"value":"cloud","exact":false}]&search_all_fields=true
+            &trades=60&trades=133&trades=132&trades=29&trades=105&type=mc,ma,rm,ab,ap
+        → count: 109, total_pages: 6
+
+    That request is why this mode exists: the same account's saved search
+    returned three notices, so a keyword search against it could only ever
+    return a subset of three. Pushing the criteria to the portal is what makes
+    "give me forty results" reach forty real tenders.
+    """
+
+    def _query(self, **kwargs):
+        connector = J360Connector(load_connector_config("j360"))
+        return connector, connector._build_j360_query(TenderFilters(**kwargs))
+
+    def test_keywords_use_the_portals_json_term_format(self):
+        _, query = self._query(keywords=["cloud"])
+        assert json.loads(query["q_simple"]) == [{"value": "cloud", "exact": False}]
+
+    def test_several_keywords_are_all_sent(self):
+        _, query = self._query(keywords=["cloud", "erp"])
+        assert [t["value"] for t in json.loads(query["q_simple"])] == ["cloud", "erp"]
+
+    def test_country_names_become_iso_codes(self):
+        """Our vocabulary is country names; J360's is ISO alpha-2."""
+        _, query = self._query(countries=["Tunisie", "Mauritanie"])
+        assert sorted(query["countries"]) == ["MR", "TN"]
+
+    def test_an_unmappable_country_falls_back_to_local_filtering(self):
+        """Dropping it would silently widen the search — the user asked for
+        Japan and would receive the world without being told."""
+        connector, query = self._query(countries=["Japon"])
+
+        assert "countries" not in query or "JP" not in (query.get("countries") or [])
+        assert "countries" in connector._filter_application.client_side
+
+    def test_sectors_become_trade_ids(self):
+        _, query = self._query(sectors=["Consulting IT", "Développement informatique"])
+        assert sorted(query["trades"]) == [132, 133]
+
+    def test_the_run_report_records_what_the_portal_honoured(self):
+        """Which criteria the portal applied decides whether a deep crawl is
+        efficient or merely thorough, so it is reported rather than assumed."""
+        connector, _ = self._query(
+            keywords=["cloud"], countries=["Tunisie"], excluded_keywords=["formation"]
+        )
+        application = connector._filter_application
+
+        assert "keywords" in application.server_side
+        assert "countries" in application.server_side
+        assert "excluded_keywords" in application.client_side
+
+    def test_dates_are_pushed_down(self):
+        from datetime import date
+
+        _, query = self._query(deadline_from=date(2026, 8, 1))
+        assert query["date_limite_after"] == "2026-08-01"
+
+    def test_defaults_match_what_the_portals_own_ui_sends(self):
+        _, query = self._query(keywords=["cloud"])
+
+        assert query["order_by"] == "-created"     # append-only: no drift
+        assert query["search_all_fields"] is True  # body text, not titles only
+        assert query["op"] == "AND"
 
 
 class TestJwtLifetimes:
@@ -348,3 +445,160 @@ class TestRefreshEndpointDiscovery:
         candidates = connector._refresh_endpoints({"endpoint": "/custom/renew/"})
 
         assert candidates[0] == "/custom/renew/"
+
+
+class TestTheDeepLinkOpensTheRealAnnouncement:
+    """`/announce/:announceId` is a *popup* state in J360's AngularJS router — a
+    modal meant to open over a parent page, not a route of its own. Reached
+    directly it silently falls back to the search screen, so the link looked
+    broken while returning HTTP 200. The addressable form is the parent state's
+    path plus the popup segment.
+
+    Read off the shipped bundle, not guessed:
+        getPopupStateConfig = () => ({ url: '/announce/:announceId', ... })
+        states: my-monitoring.announce, my-monitoring.folder.announce, ...
+    """
+
+    def test_the_url_is_nested_under_its_parent_state(self):
+        connector = J360Connector(load_connector_config("j360"))
+        record = connector.parse(_page())[0]
+
+        assert record.source_url == (
+            "https://app.j360.info/#/my-monitoring/announce/55822711"
+        )
+
+    def test_the_bare_popup_route_is_not_used(self):
+        """Regression guard: `#/announce/<id>` redirects to search."""
+        connector = J360Connector(load_connector_config("j360"))
+
+        for record in connector.parse(_page()):
+            assert "/#/announce/" not in record.source_url
+
+
+class TestNonProcurementNoticesAreFlagged:
+    """J360 aggregates more than tenders.
+
+    A recruitment ad for an "Assistant administratif (H/F)" whose description
+    mentions "une première expérience sur Sage X3" scores exactly like a real
+    ERP tender — the scoring is not wrong, the notice simply is not a contract
+    to bid on. J360's own `special_criterion` carries the distinction; keeping
+    it is what lets anyone act on it.
+    """
+
+    def test_staffing_notices_are_marked(self, connector):
+        un = [connector.normalize(r) for r in connector.parse(_page())][2]
+
+        assert un.extra["is_staffing_offer"] is True
+        assert "IE_OI_ONG" in un.extra["j360_criteria"]
+
+    def test_an_ordinary_tender_is_not_marked(self, connector):
+        ance = next(connector.normalize(r) for r in connector.parse(_page()))
+
+        assert "is_staffing_offer" not in ance.extra
+
+
+class TestAttachments:
+    """J360 does publish downloadable notices, on some announcements.
+
+    Measured on a live page: 3 of 20 carried an `attached_files` entry shaped
+    {url, name}, pointing at /api/announces/{id}/attached_file?fid=... . That
+    URL returns a real .docx (19 KB) with the session and 401 without it —
+    which is why the downloader has to carry the connector's session rather
+    than fetching anonymously.
+    """
+
+    def _page_with_files(self):
+        payload = json.loads(json.dumps(J360_RESPONSE))
+        payload["results"] = payload["results"][:1]
+        return payload
+
+    def test_an_attachment_becomes_a_document_reference(self, connector):
+
+        detail_body = {
+            "id": 56232383,
+            "additional_information": "Avis d'appel d'offres travaux",
+            "attached_files": [
+                {
+                    "url": "https://app.j360.info/api/announces/56232383/"
+                    "attached_file?fid=14219240",
+                    "name": "Avis d’appel d’offres",
+                }
+            ],
+        }
+        result = connector._detail_from_body(detail_body)
+
+        assert len(result.documents) == 1
+        assert result.documents[0].name == "Avis d’appel d’offres"
+        assert "attached_file?fid=" in result.documents[0].url
+
+    def test_an_announcement_without_attachments_yields_none(self, connector):
+        result = connector._detail_from_body({"id": 1, "attached_files": []})
+        assert result.documents == []
+
+    def test_the_contract_total_is_preferred_over_a_lot_figure(self, connector):
+        """A per-lot amount would understate the opportunity."""
+        result = connector._detail_from_body(
+            {
+                "amounts": [
+                    {"type": "lot", "amount": 50000.0, "currency": "€"},
+                    {"type": "total", "amount": 2000000.0, "currency": "€"},
+                ]
+            }
+        )
+
+        assert result.estimated_budget == Decimal("2000000.0")
+        assert result.currency == "EUR"
+
+
+class TestThePublicationIsTheRichestSource:
+    """"Voir le détail" is not in the JSON — and it is the whole point.
+
+    Measured on live announcements:
+
+        award result (CNI)      540 chars — Id, amounts ex/inc tax, awardee, RNE
+        framework (KOATY)     9 390 chars — the full "Avis de marché", all sections
+        UN software           12 471 chars — the complete Request for Proposal
+
+    `additional_information` was empty on two of those three. The publication
+    exists for every announcement, unlike attachments, which only ~15% carry —
+    so this, not the attachments, is what gives a CV something to match against.
+    """
+
+    def test_the_publication_url_is_recognised(self, connector):
+        body = {
+            "id": 56189132,
+            "external_url": (
+                "https://j360-ext.info/announces/56189132/description/332491/token/"
+            ),
+        }
+        result = connector._detail_from_body(body)
+
+        # The mapping itself does not fetch; the URL is what fetch_detail follows.
+        assert body["external_url"] in result.source_links
+
+    def test_a_non_publication_url_is_not_followed(self, connector):
+        """Only j360-ext links are the signed publication; the rest are the
+        originating portals, which need their own credentials."""
+        import asyncio
+
+        assert asyncio.run(connector._fetch_publication("https://www.un.org/notice")) is None
+        assert asyncio.run(connector._fetch_publication(None)) is None
+
+
+class TestThePublicationIsNotTruncated:
+    """A cap must sit above the real distribution, not through the middle of it.
+
+    Measured: a first ceiling of 20 000 characters cut 8 of 23 stored
+    publications at exactly that figure — a third of the corpus. The lost tail
+    is where award criteria and required profiles sit, because standardised
+    notices put administrative sections first and evaluation last. The cap was
+    silently removing the only part that matters for CV matching.
+    """
+
+    def test_the_ceiling_is_far_above_the_observed_maximum(self):
+        from app.connectors.j360.connector import _MAX_PUBLICATION_CHARS
+
+        # Longest publication actually observed was ~30 000 characters once the
+        # first cap was lifted; the ceiling exists for a runaway page, not for
+        # ordinary notices.
+        assert _MAX_PUBLICATION_CHARS >= 100_000

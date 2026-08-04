@@ -451,3 +451,147 @@ class TestNotificationTargeting:
 
         assert len(created) == 1
         assert created[0].user_id == "amine"
+
+
+class TestEnrichmentGate:
+    """Which tenders are worth opening, and the loop that must not form.
+
+    Enrichment ends by re-scoring, and it is *triggered* by a score. Without a
+    marker that survives the round trip, every enriched tender would enrich
+    again the moment it was re-scored — forever, once per notice, against a
+    live portal.
+    """
+
+    def _gate(self, **overrides) -> bool:
+        from app.workers.tasks.pipeline import enrichment_decision
+
+        defaults = {
+            "score": 0.80,
+            "already_enriched": False,
+            "has_identifier": True,
+            "supports_detail": True,
+        }
+        return enrichment_decision(**{**defaults, **overrides})
+
+    def test_a_promising_tender_is_enriched(self):
+        assert self._gate() is True
+
+    def test_a_low_score_is_not_worth_a_fetch(self):
+        from app.workers.tasks.pipeline import ENRICHMENT_MIN_SCORE
+
+        assert self._gate(score=ENRICHMENT_MIN_SCORE - 0.01) is False
+        assert self._gate(score=ENRICHMENT_MIN_SCORE) is True
+
+    def test_an_already_enriched_tender_is_never_re_enriched(self):
+        """The guard against score -> enrich -> score -> enrich, forever."""
+        assert self._gate(already_enriched=True, score=0.99) is False
+
+    def test_a_source_without_a_detail_page_is_skipped(self):
+        """Asked before any setup, so an unsupported source costs nothing."""
+        assert self._gate(supports_detail=False) is False
+
+    def test_a_tender_without_an_identifier_cannot_be_located(self):
+        assert self._gate(has_identifier=False) is False
+
+    def test_both_real_sources_declare_detail_support(self):
+        from app.connectors.registry import connector_class
+
+        assert connector_class("j360").supports_detail is True
+        assert connector_class("tuneps").supports_detail is True
+        assert connector_class("fixture").supports_detail is False
+
+
+class TestEnrichmentIsAdditive:
+    """Enrichment must never subtract.
+
+    A detail page that omits a field it does not publish would otherwise blank
+    a value the listing did supply — a silent regression, and the worst kind
+    because the tender still looks fully processed afterwards.
+    """
+
+    def _tender(self, session, **overrides):
+        defaults = {
+            "source_key": "j360",
+            "entry_point": EntryPoint.MANUAL_SCRAPE.value,
+            "title": "Acquisition de logiciels",
+            "external_id": "56223296",
+        }
+        defaults.update(overrides)
+        tender = Tender(**defaults)
+        session.add(tender)
+        session.flush()
+        return tender
+
+    def _detail(self, **kwargs):
+        from app.connectors.models import DetailResult
+
+        return DetailResult(**kwargs)
+
+    def test_a_missing_budget_does_not_erase_a_known_one(self, db_session):
+        from app.workers.tasks.pipeline import _apply_detail
+
+        tender = self._tender(db_session, estimated_budget=Decimal("50000.00"), currency="TND")
+        _apply_detail(db_session, tender, self._detail(description="plus de detail"))
+
+        assert tender.estimated_budget == Decimal("50000.00")
+        assert tender.currency == "TND"
+
+    def test_a_budget_is_filled_when_absent(self, db_session):
+        from app.workers.tasks.pipeline import _apply_detail
+
+        tender = self._tender(db_session, estimated_budget=None)
+        applied, _ = _apply_detail(
+            db_session,
+            tender,
+            self._detail(estimated_budget=Decimal("2000000"), currency="EUR"),
+        )
+
+        assert tender.estimated_budget == Decimal("2000000")
+        assert tender.currency == "EUR"
+        assert "budget" in applied
+
+    def test_a_shorter_description_does_not_replace_a_longer_one(self, db_session):
+        """The listing sometimes carries more than a thin detail page does."""
+        from app.workers.tasks.pipeline import _apply_detail
+
+        tender = self._tender(db_session, description="une description deja detaillee")
+        _apply_detail(db_session, tender, self._detail(description="court"))
+
+        assert tender.description == "une description deja detaillee"
+
+    def test_the_full_object_replaces_a_truncated_one(self, db_session):
+        from app.workers.tasks.pipeline import _apply_detail
+
+        tender = self._tender(db_session, description="Acquisition de...")
+        full = "Acquisition de logiciels de gestion integree pour la direction des systemes"
+        applied, _ = _apply_detail(db_session, tender, self._detail(description=full))
+
+        assert tender.description == full
+        assert "description" in applied
+
+    def test_source_links_are_recorded(self, db_session):
+        """J360 hosts no files: these links are the only route to the DCE."""
+        from app.workers.tasks.pipeline import _apply_detail
+
+        tender = self._tender(db_session)
+        links = ["https://ted.europa.eu/notice/-/detail/534356-2026"]
+        _apply_detail(db_session, tender, self._detail(source_links=links))
+
+        assert tender.extra["source_links"] == links
+
+    def test_documents_are_queued_once(self, db_session):
+        """Re-running enrichment must not duplicate the attachment rows."""
+        from app.connectors.models import DocumentRef
+        from app.workers.tasks.pipeline import _apply_detail
+
+        tender = self._tender(db_session)
+        detail = self._detail(
+            documents=[DocumentRef(url="https://portal.tn/cdc.pdf", name="CDC")]
+        )
+
+        _, added = _apply_detail(db_session, tender, detail)
+        db_session.flush()
+        _, again = _apply_detail(db_session, tender, detail)
+
+        assert added == 1
+        assert again == 0

@@ -381,6 +381,7 @@ def _persist_outcome(
                 "records_parsed": outcome.records_parsed,
                 "items_filtered_out": outcome.items_filtered_out,
                 "items_duplicate_in_run": outcome.items_duplicate_in_run,
+                "stop_reason": outcome.stop_reason,
                 "skip_reason": outcome.skip_reason,
             }
             if outcome.filter_application:

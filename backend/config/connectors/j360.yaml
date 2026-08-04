@@ -19,19 +19,31 @@
 # So the connector refreshes the access token itself (see `token_refresh`)
 # rather than asking a human to re-capture every quarter of an hour.
 #
-# ── ⚠ BILLING: DETAIL FETCHES MAY COST MONEY ────────────────────────────────
-# Every result carries `paid: false` and `viewed: true`, and the account has an
-# `overquota` endpoint. J360 sells pay-per-announcement access (~€9 each) on top
-# of subscriptions. Opening a *detail* view is therefore a metered action.
+# ── BILLING: MEASURED, NOT ASSUMED ─────────────────────────────────────────
+# An earlier version of this file warned that opening an announcement was a
+# metered action costing ~€9. That was wrong, and the correction is worth
+# recording so nobody re-introduces the caution.
 #
-# `documents.download` and detail enrichment are consequently DISABLED, and
-# `max_pages` is small. Do not enable them without confirming your plan's terms
-# — an overnight schedule that "helpfully" opened every notice could generate a
-# four-figure bill.
+# What that claim rested on: every list result carries `paid: false`, the app
+# has an `overquota` route, and public pricing pages mention per-announcement
+# rates. None of it was checked against this account.
 #
-# The list endpoint used here returns enough to detect and rank an opportunity
-# (title, buyer, dates, source, search-highlight snippets). A human then opens
-# the ones worth paying for, deliberately, in J360's own UI.
+# What measurement showed:
+#   GET /api/me  →  subscription_active: "True", is_overquota: false
+#                   additional_user_price: "5.00"   ← per extra USER SEAT
+#                   has_reached_users_limit, has_reached_invitations_limit
+#   There is no announcement-consumption counter anywhere in the account.
+#
+#   Fetching the detail of an announcement with `viewed: false, paid: false`
+#   returned HTTP 200 with full content, and every counter in /api/me was
+#   byte-identical before and after.
+#
+# The quota model is SEATS, not views. `paid` on a list result is a property of
+# the announcement, not a statement about what this account owes.
+#
+# Detail enrichment is therefore included in the subscription. The rate limit
+# below stays low for a different and still-valid reason: the session
+# identifies the account on every request, and volume is what gets noticed.
 #
 # ── ⚠ J360 RE-PUBLISHES TUNEPS ──────────────────────────────────────────────
 # `source_name` on real results includes "TN - TUNEPS" and "TN - Plateforme des
@@ -81,21 +93,28 @@ auth:
     username: "SMARTTENDER_CONNECTOR_J360_USERNAME"
     password: "SMARTTENDER_CONNECTOR_J360_PASSWORD"
 
-# Saved searches to crawl. These are curated in J360's own UI — countries,
-# activities (Consulting IT, Développement informatique…), keywords and
-# exclusions — which is far more robust than reconstructing that filter state
-# here, and keeps the criteria where the team already maintains them.
+# ── SEARCH MODE ──────────────────────────────────────────────────────────────
+# "query"        Push our filters to /api/announces. The portal does the
+#                filtering, so a page of results is a page of *matches* and
+#                paging deeper reaches genuinely new tenders. This is the
+#                default and what the Scrape screen drives.
 #
-# The id is the number in the URL: app.j360.info/#/my-monitoring/searches/57549
+# "saved_search" Crawl a search curated in J360's own UI. Useful for a standing
+#                watch the team maintains there, but its criteria are frozen:
+#                filters entered in our UI can only narrow what it already
+#                returned, never widen it. That is why a saved search holding
+#                three notices can never answer a keyword search.
+search_mode: "query"
+
+# Used only when search_mode is "saved_search".
+# The id is the number in app.j360.info/#/my-monitoring/searches/<id>
 saved_searches:
   - id: 57549
     name: "MBO_TUN"
-# Add the international ones — that is where J360 earns its keep:
-#  - id: <MBO_AFRIQUE id>
-#    name: "MBO_AFRIQUE"
 
 endpoints:
-  search: "/api/searches/{search_id}/announces"
+  search: "/api/announces"
+  saved_search: "/api/searches/{search_id}/announces"
 
 pagination:
   # DRF envelope: follow the server's own `next` link rather than rebuilding
@@ -106,28 +125,86 @@ pagination:
   page_size_param: "paginate_by"
   page_size: 20               # the API's own default
   start_page: 1
-  # Deliberately small: metered account, and saved searches are curated to be
-  # short. Raise only after confirming the billing terms.
-  max_pages: 5
+  # Server-side filtering means every page is a page of matches, so this cap
+  # now bounds real results rather than wasted fetches. Still modest: the
+  # account is metered and the crawl is deliberately single-threaded.
+  max_pages: 10
   stop_on_empty_page: true
 
-# Sorting by an immutable-ish field keeps deep pagination from drifting as new
-# notices arrive mid-crawl.
 default_query:
-  order_by: "date_limite"
+  # Newest first. `-created` is what J360's own UI sends, and ordering by an
+  # append-only field keeps deep pagination from drifting as notices arrive
+  # mid-crawl — a tender would otherwise shift onto a page we already passed.
+  order_by: "-created"
+  # Search titles *and* body text. Restricted to titles, most notices whose
+  # subject is stated only in the body would be missed.
+  search_all_fields: true
+  op: "AND"
+  # `mc` = marché en cours. J360's UI also offers ma (archived), rm (results),
+  # ab (business news) and ap (calls for projects); its defaults include all of
+  # them, which is why a browser search surfaces notices closed five years ago.
+  # A bid-detection tool wants what can still be bid on.
+  type: "mc"
+
+# ── CONTENT FILTERING ────────────────────────────────────────────────────────
+# J360 aggregates more than procurement notices. `special_criterion` carries
+# the flags its own search form exposes; INDIV marks an individual-consultant
+# or temporary-work posting — recruitment, not a contract to bid on.
+#
+# Without this, an ad for an "Assistant administratif (H/F)" whose description
+# happens to mention Sage X3 scores like a genuine ERP tender and lands near
+# the top of the dashboard.
+#
+# Set to false if Inetum wants to see staffing requests too — "Assistance
+# Technique (mise à disposition de ressources)" is in the service catalogue, so
+# a share of these are legitimately in scope.
+exclude_criteria:
+  - "INDIV"
 
 filter_mapping:
-  # The saved search already encodes the criteria, so nothing is pushed down;
-  # anything set in the UI is applied client-side after normalisation.
-  keywords: null
-  country: null
-  sector: null
+  # Pushed to the portal. Everything named here is applied by J360 itself, so
+  # a page of results is a page of matches — which is what makes "give me 40
+  # results" reach genuinely new tenders instead of re-filtering the same two
+  # pages. Anything left null is still applied locally after normalisation.
+  keywords: "q_simple"
+  countries: "countries"
+  sectors: "trades"
+  publication_date_from: "date_publication_after"
+  deadline_from: "date_limite_after"
+  deadline_to: "date_limite_before"
+  # No server-side equivalent observed; handled client-side.
+  excluded_keywords: null
   organization: null
-  publication_date_from: null
-  deadline_from: null
-  deadline_to: null
   budget_min: null
   status: null
+
+filter_values:
+  # Our filters speak country *names*; J360 speaks ISO-3166 alpha-2.
+  countries:
+    "Tunisie": "TN"
+    "Tunisia": "TN"
+    "Mauritanie": "MR"
+    "Maroc": "MA"
+    "Algérie": "DZ"
+    "France": "FR"
+    "Sénégal": "SN"
+    "Côte d'Ivoire": "CI"
+    "Belgique": "BE"
+  # J360 "trades" are numeric activity ids. These five are the account's own
+  # IT selection, read off the search form: Conseil ressources humaines,
+  # Consulting IT, Développement informatique, Elearning, and Logiciels de
+  # gestion et bureautique. Names are ours; only the ids matter to the API.
+  sectors:
+    "Conseil RH": 60
+    "Consulting IT": 133
+    "Développement informatique": 132
+    "Elearning": 29
+    "Logiciels de gestion": 105
+  # J360's announce_type codes, mapped to the platform vocabulary.
+  procurement_type:
+    open: "MC"                      # Marché en cours
+    prior_information_notice: "AP"  # Appel à projets
+    awarded: "RM"                   # Résultat de marché
 
 response_mapping:
   items_path: "results"
@@ -146,13 +223,6 @@ response_mapping:
     source: "source_name"
     source_website: "source_domain"
 
-filter_values:
-  # J360's announce_type codes, mapped to the platform vocabulary.
-  procurement_type:
-    open: "MC"                      # Marché en cours
-    prior_information_notice: "AP"  # Appel à projets
-    awarded: "RM"                   # Résultat de marché
-
 parsing:
   date_formats:
     - "%Y-%m-%dT%H:%M:%S"
@@ -165,8 +235,15 @@ parsing:
 required_fields: ["title", "source_url"]
 
 documents:
-  # ⚠ Opening an announcement's documents is a metered action. Leave disabled.
-  download: false
+  # Detail fetches are included in the subscription (see BILLING above), so
+  # this is now a *scope* decision rather than a cost one. Enabled by the
+  # enrichment pass, which opens only announcements worth the round trip
+  # instead of every result — the rate limit makes indiscriminate fetching
+  # slow, not expensive.
+  download: true
+  # Attached files are hosted on the originating portal, not on J360, so a
+  # download leaves the subscriber API entirely.
+  follow_external: true
 
 http:
   robots:

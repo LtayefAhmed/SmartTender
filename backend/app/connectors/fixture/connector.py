@@ -32,6 +32,22 @@ __all__ = ["FixtureConnector"]
 class FixtureConnector(HtmlListingConnector):
     """Reads listing and detail pages from ``fixtures_dir`` instead of HTTP."""
 
+    @classmethod
+    def fixtures_dir(cls, config) -> Path:
+        return (BACKEND_ROOT / (config.get("fixtures_dir") or "tests/fixtures/pages")).resolve()
+
+    @classmethod
+    def unmet_precondition(cls, config) -> str | None:
+        """The sample pages live under ``tests/``, which runtime images exclude.
+
+        Without this the connector advertises itself, is offered in the source
+        picker, and then fails on every run — so a demonstration fixture ends up
+        looking to the client like a broken production source.
+        """
+        if not cls.fixtures_dir(config).is_dir():
+            return "fixtures_unavailable"
+        return None
+
     async def setup(self) -> None:
         # No HTTP client and no browser: this connector never touches the
         # network, which is the entire point.
