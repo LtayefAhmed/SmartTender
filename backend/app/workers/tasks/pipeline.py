@@ -864,16 +864,19 @@ def _apply_detail(session: Any, tender: Tender, detail: Any) -> tuple[list[str],
     # would then insert the same attachment again — and the unique constraint
     # is on `sha256`, which is null until the file has been downloaded, so
     # nothing at the database level would catch it.
-    known_urls = set(
-        session.execute(
+    known_urls = {
+        _url_identity(url)
+        for url in session.execute(
             select(TenderDocument.source_url).where(TenderDocument.tender_id == tender.id)
         )
         .scalars()
         .all()
-    )
+        if url
+    }
     added = 0
     for document in detail.documents:
-        if document.url in known_urls:
+        identity = _url_identity(document.url)
+        if identity in known_urls:
             continue
         session.add(
             TenderDocument(
@@ -884,9 +887,24 @@ def _apply_detail(session: Any, tender: Tender, detail: Any) -> tuple[list[str],
                 status="pending",
             )
         )
-        known_urls.add(document.url)
+        known_urls.add(identity)
         added += 1
     if added:
         applied.append("documents")
 
     return applied, added
+
+
+def _url_identity(url: str) -> str:
+    """A URL's identity for de-duplication, ignoring its query string.
+
+    Presigned links (S3, MinIO, J360's own cached copies) carry a fresh
+    signature and expiry on every fetch — the query string changes even when
+    the underlying object does not. Comparing full URLs would then record the
+    same attachment again on every re-enrichment; comparing scheme+host+path
+    recognises it as the file already on file.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))

@@ -209,6 +209,22 @@ function TenderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
     }
   }
 
+  function print() {
+    if (!detail.data) return;
+    printTender(detail.data);
+  }
+
+  async function downloadDocument(documentId: string) {
+    try {
+      const res = await api.get<{ url: string }>(
+        `/tenders/${id}/documents/${documentId}/download`
+      );
+      window.open(res.url, "_blank");
+    } catch (e: any) {
+      toast.err("Téléchargement indisponible", e.message);
+    }
+  }
+
   const t = detail.data;
   return (
     <Drawer
@@ -328,8 +344,55 @@ function TenderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                     <div className="row">
                       <span className="tiny muted">{fmtBytes(d.size_bytes)}</span>
                       <Badge color={statusColor(d.status)}>{d.status}</Badge>
+                      {d.status === "stored" ? (
+                        <button className="btn sm" onClick={() => downloadDocument(d.id)}>
+                          ⭳
+                        </button>
+                      ) : (
+                        d.source_url && (
+                          <a
+                            className="btn sm ghost"
+                            href={d.source_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            ↗
+                          </a>
+                        )
+                      )}
                     </div>
                   </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          <Card title="Impression">
+            <div className="row spread">
+              <span className="tiny muted">
+                Fiche complète de l'AO — informations, score, pièces jointes et liens, prête à
+                imprimer ou enregistrer en PDF.
+              </span>
+              <button className="btn sm" onClick={print}>
+                🖨️ Imprimer la fiche
+              </button>
+            </div>
+          </Card>
+
+          {publicationLinks(t.extra).length > 0 && (
+            <Card title="Liens de publication">
+              <div className="stack" style={{ gap: 6 }}>
+                {publicationLinks(t.extra).map((url) => (
+                  <a
+                    key={url}
+                    className="tiny"
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ wordBreak: "break-all" }}
+                  >
+                    ↗ {url}
+                  </a>
                 ))}
               </div>
             </Card>
@@ -339,6 +402,147 @@ function TenderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         </div>
       ) : null}
     </Drawer>
+  );
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Opens a separate window with a self-contained, print-ready sheet for the
+ * whole tender — everything a bid manager would want on paper: the facts,
+ * the score explanation, the attachments and the source links. A dedicated
+ * window rather than `@media print` on the drawer itself: the drawer is a
+ * fixed-height overlay clipped to the viewport, and the app's own CSS was
+ * never written with a printed page in mind — this keeps the two concerns
+ * (screen UI, printed sheet) from fighting each other.
+ */
+function printTender(t: TenderDetail) {
+  const win = window.open("", "_blank", "width=900,height=1000");
+  if (!win) return;
+
+  const rows: [string, string][] = [
+    ["Référence", t.reference ?? "—"],
+    ["Source", t.source_key],
+    ["Acheteur", t.buyer ?? "—"],
+    ["Financeur", t.funding_organization ?? "—"],
+    ["Pays / lieu", [t.country, t.location].filter(Boolean).join(" · ") || "—"],
+    ["Secteur", t.sector ?? "—"],
+    ["Type de procédure", t.procurement_type],
+    ["Publication", fmtDate(t.publication_date, true)],
+    ["Échéance", fmtDate(t.deadline, true)],
+    ["Budget estimé", fmtMoney(t.estimated_budget, t.currency)],
+    ["Statut", t.status],
+    ["Pertinence", `${BAND_LABEL[t.relevance_band]}${t.relevance_score != null ? ` · ${t.relevance_score.toFixed(3)}` : ""}`],
+  ];
+  if (t.cpv_codes.length) rows.push(["CPV", t.cpv_codes.join(", ")]);
+  if (t.seen_on_sources.length > 1) {
+    rows.push(["Vu sur", `${t.seen_on_sources.join(", ")} (${t.duplicate_hits} doublon(s))`]);
+  }
+
+  const scoreRows = t.latest_score
+    ? Object.entries(t.latest_score.breakdown)
+        .sort((a, b) => b[1].weighted - a[1].weighted)
+        .map(
+          ([name, c]) => `
+        <tr>
+          <td>${escapeHtml(name.replace(/_/g, " "))}</td>
+          <td>×${c.weight}</td>
+          <td>${c.value != null ? c.value.toFixed(2) : "n/a"}</td>
+          <td>${c.weighted.toFixed(3)}</td>
+          <td>${escapeHtml(c.explanation)}</td>
+        </tr>`
+        )
+        .join("")
+    : "";
+
+  const documentRows = t.documents
+    .map(
+      (d) => `<li>${escapeHtml(d.name ?? "document")} — ${d.status}${
+        d.size_bytes ? ` — ${fmtBytes(d.size_bytes)}` : ""
+      }</li>`
+    )
+    .join("");
+
+  const linkRows = publicationLinks(t.extra)
+    .map((url) => `<li><a href="${escapeHtml(url)}">${escapeHtml(url)}</a></li>`)
+    .join("");
+
+  win.document.write(`<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Fiche AO — ${escapeHtml(t.title)}</title>
+<style>
+  body { font-family: system-ui, sans-serif; color: #111; max-width: 860px; margin: 32px auto; padding: 0 20px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .meta { color: #555; font-size: 12px; margin-bottom: 24px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #333; margin: 28px 0 10px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.kv td { padding: 5px 8px; vertical-align: top; }
+  table.kv td:first-child { color: #666; width: 200px; }
+  table.score { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.score th, table.score td { border-bottom: 1px solid #e2e2e2; padding: 6px 8px; text-align: left; }
+  p.desc { font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+  ul { font-size: 13px; padding-left: 20px; }
+  a { color: #1a4fd6; word-break: break-all; }
+  footer { margin-top: 36px; font-size: 11px; color: #999; border-top: 1px solid #ccc; padding-top: 10px; }
+  @media print { body { margin: 0; } }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(t.title)}</h1>
+  <div class="meta">Fiche imprimée le ${new Date().toLocaleDateString("fr-FR")} · id ${t.id}</div>
+
+  <h2>Informations</h2>
+  <table class="kv">${rows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`).join("")}</table>
+
+  ${t.description ? `<h2>Description</h2><p class="desc">${escapeHtml(t.description)}</p>` : ""}
+
+  ${
+    scoreRows
+      ? `<h2>Explication du score (profil ${escapeHtml(t.latest_score!.profile_version)})</h2>
+  <table class="score">
+    <thead><tr><th>Critère</th><th>Poids</th><th>Valeur</th><th>Contribution</th><th>Explication</th></tr></thead>
+    <tbody>${scoreRows}</tbody>
+  </table>`
+      : ""
+  }
+
+  ${documentRows ? `<h2>Pièces jointes</h2><ul>${documentRows}</ul>` : ""}
+  ${linkRows ? `<h2>Liens de publication</h2><ul>${linkRows}</ul>` : ""}
+
+  <footer>SmartTender AI — document généré automatiquement, à vérifier auprès de la source avant toute décision.</footer>
+</body>
+</html>`);
+  win.document.close();
+  win.focus();
+  win.print();
+}
+
+/**
+ * J360 hosts no files of its own — a tender's cahier des charges only shows
+ * up once enrichment opens the notice's own page on the originating portal.
+ * Those links are recorded in `extra.source_links` (see
+ * `app.workers.tasks.pipeline._apply_detail`), not as typed columns, so they
+ * are read defensively here rather than added to `TenderDetail`.
+ *
+ * `j360-ext.info` links are excluded: they are J360's own signed proxy of
+ * the publication page (already read server-side to build this very drawer,
+ * and expiring besides), not a source a user would want to open — the
+ * originating portal's own link is what's useful here.
+ */
+function publicationLinks(extra: Record<string, unknown> | undefined): string[] {
+  const links = extra?.["source_links"];
+  if (!Array.isArray(links)) return [];
+  return links.filter(
+    (url): url is string =>
+      typeof url === "string" && url.length > 0 && !url.includes("j360-ext.info")
   );
 }
 

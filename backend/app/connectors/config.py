@@ -32,6 +32,22 @@ def _get(mapping: dict[str, Any], path: str, default: Any = None) -> Any:
     return node if node is not None else default
 
 
+def _is_file(path: Any) -> bool:
+    """``Path.is_file()``, tolerant of a flaky bind mount.
+
+    Docker Desktop on Windows can answer a ``stat`` on a path that does not
+    exist yet with ``OSError: [Errno 22] Invalid argument`` instead of the
+    usual ``FileNotFoundError`` — the same class of relay flakiness
+    ``scripts/preflight`` exists to work around for published ports. A
+    credential check must degrade to "missing", not take down the endpoint
+    describing every connector.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 @dataclass(slots=True)
 class ConnectorConfig:
     """Immutable, fully-resolved configuration for one connector."""
@@ -175,7 +191,7 @@ class ConnectorConfig:
 
         from pathlib import Path
 
-        if not Path(cert_path).is_file() or not Path(key_path).is_file():
+        if not _is_file(Path(cert_path)) or not _is_file(Path(key_path)):
             return None
 
         password = resolved.get("key_password")
@@ -192,7 +208,7 @@ class ConnectorConfig:
             # The captured session *is* the credential. Env username/password
             # are only needed to (re-)capture it interactively.
             path = self.session_file()
-            return bool(path and path.is_file())
+            return bool(path and _is_file(path))
 
         if mode == "client_certificate":
             # The certificate is the credential. A form login, where the portal

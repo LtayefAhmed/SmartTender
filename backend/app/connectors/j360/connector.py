@@ -461,11 +461,23 @@ class J360Connector(JsonApiConnector):
         # awardee and its registration number. `additional_information` is often
         # empty while this is not, so it is fetched for every announcement
         # rather than only when the JSON looks thin.
-        publication = await self._fetch_publication(body.get("external_url"))
+        publication, publication_documents = await self._fetch_publication(
+            body.get("external_url")
+        )
         if publication:
             result.extra["publication_text"] = publication
             if len(publication) > len(result.description or ""):
                 result.description = publication
+
+        # `attached_files` above is J360's own metadata and is empty for most
+        # notices — J360 aggregates rather than hosts. The publication page is
+        # the originating portal's own markup, and that is where the cahier des
+        # charges actually gets linked.
+        known_urls = {doc.url for doc in result.documents}
+        for document in publication_documents:
+            if document.url not in known_urls:
+                result.documents.append(document)
+                known_urls.add(document.url)
 
         self.log.info(
             "connector.detail_fetched",
@@ -477,15 +489,17 @@ class J360Connector(JsonApiConnector):
         )
         return None if result.is_empty() else result
 
-    async def _fetch_publication(self, external_url: Any) -> str | None:
-        """Read the signed publication page and return it as plain text.
+    async def _fetch_publication(
+        self, external_url: Any
+    ) -> tuple[str | None, list[DocumentRef]]:
+        """Read the signed publication page: its text, and any file it links.
 
         Best-effort: the URL carries a time-limited signature, so a stale one
         simply yields nothing and the announcement keeps whatever the JSON gave
         it. Losing this must never cost the tender.
         """
         if not external_url or "j360-ext" not in str(external_url):
-            return None
+            return None, []
         assert self.http is not None
         try:
             page = await self.http.get(
@@ -499,16 +513,71 @@ class J360Connector(JsonApiConnector):
             )
         except Exception as exc:
             self.log.info("connector.publication_unavailable", error=str(exc)[:150])
-            return None
+            return None, []
 
         from bs4 import BeautifulSoup
 
-        text = BeautifulSoup(page.text, "lxml").get_text("\n", strip=True)
+        soup = BeautifulSoup(page.text, "lxml")
+        documents = self._publication_documents(soup)
+
+        text = soup.get_text("\n", strip=True)
         lines = [line.strip() for line in text.split("\n") if line.strip()]
         # The page opens with the publisher's own name; it is not tender content.
         if lines and lines[0].lower() in {"octopusmind", "j360"}:
             lines = lines[1:]
-        return "\n".join(lines)[:_MAX_PUBLICATION_CHARS] or None
+        return "\n".join(lines)[:_MAX_PUBLICATION_CHARS] or None, documents
+
+    @staticmethod
+    def _publication_documents(soup: Any) -> list[DocumentRef]:
+        """Attachments linked from the *originating* portal's own markup.
+
+        J360's own ``attached_files`` is empty for most notices — it aggregates
+        rather than hosts. The publication page is a proxy of the upstream
+        portal's page, and that page is where the cahier des charges is
+        actually linked. Two independent signals are combined because the
+        upstream portal varies per notice:
+
+        * most run WordPress with the ``wp-attachments`` plugin, which renders
+          each file as ``<li class="post-attachment"><a href=...>name</a></li>``
+          — this is where a human-readable filename comes from;
+        * J360 additionally embeds its own cached copy of the *primary*
+          document as a plain ``<embed src=...>`` when it has one — a
+          J360-hosted URL that keeps working even if the upstream portal
+          goes away.
+
+        The two are not independent files: the embed is J360's own copy of
+        whichever attachment already exists, re-encoded (different bytes,
+        identical text — measured on a live pair: same 8 pages, same
+        content, different size because J360 re-renders it). Listing both
+        would show a bid manager the same cahier des charges twice, once
+        with a real filename and once as an anonymous "document". The embed
+        is therefore only kept as a *fallback* for when no named attachment
+        was found at all — losing the upstream link entirely is the one
+        case it earns its keep.
+
+        Measured against a live captured page (a Moroccan tanmia.ma notice);
+        neither pattern is documented by J360, so this degrades to an empty
+        list rather than raising when a future page doesn't match either.
+        """
+        seen: set[str] = set()
+        documents: list[DocumentRef] = []
+
+        for link in soup.select(".post-attachment a[href], .post-attachments a[href]"):
+            url = str(link.get("href") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            documents.append(DocumentRef(url=url, name=link.get_text(strip=True) or None))
+
+        if not documents:
+            for embed in soup.select("embed[src]"):
+                url = str(embed.get("src") or "").strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                documents.append(DocumentRef(url=url))
+
+        return documents
 
     def _detail_from_body(self, body: dict[str, Any]) -> DetailResult:
         """Map a detail payload onto the canonical result.
