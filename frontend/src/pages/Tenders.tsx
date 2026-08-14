@@ -324,7 +324,29 @@ function TenderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
               <div className="stack" style={{ gap: 8 }}>
                 {t.documents.map((d) => (
                   <div key={d.id} className="row spread">
-                    <span className="tiny">{d.name ?? "document"}</span>
+                    {/* A stored attachment is openable. Collecting a cahier des
+                        charges nobody can reach is close to not collecting it. */}
+                    {d.status === "stored" ? (
+                      <button
+                        className="tiny"
+                        style={{
+                          background: "transparent",
+                          border: 0,
+                          padding: 0,
+                          color: "var(--teal)",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          textDecoration: "underline",
+                        }}
+                        onClick={() => openDocument(t.id, d.id, toast)}
+                      >
+                        ↓ {d.name ?? "document"}
+                      </button>
+                    ) : (
+                      <span className="tiny muted" title={d.source_url ?? undefined}>
+                        {d.name ?? "document"}
+                      </span>
+                    )}
                     <div className="row">
                       <span className="tiny muted">{fmtBytes(d.size_bytes)}</span>
                       <Badge color={statusColor(d.status)}>{d.status}</Badge>
@@ -340,6 +362,27 @@ function TenderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
       ) : null}
     </Drawer>
   );
+}
+
+/** Open one attachment through a short-lived presigned link.
+ *
+ *  The API never streams file bytes: a 25 MB PDF passing through a request
+ *  handler would hold a worker for the whole transfer. It hands back a URL and
+ *  the browser fetches the object store directly.
+ */
+async function openDocument(
+  tenderId: string,
+  documentId: string,
+  toast: ReturnType<typeof useToast>
+) {
+  try {
+    const res = await api.get<{ url: string }>(
+      `/tenders/${tenderId}/documents/${documentId}/download`
+    );
+    window.open(res.url, "_blank", "noopener");
+  } catch (e) {
+    toast.err("Téléchargement impossible", (e as Error).message);
+  }
 }
 
 function valueColor(v: number | null): string {

@@ -59,6 +59,9 @@ class ObjectStorage:
         settings = get_settings()
         self.bucket = settings.storage.bucket
         self.presigned_ttl = settings.storage.presigned_ttl_seconds
+        self.public_endpoint = settings.storage.public_endpoint.strip()
+        self.endpoint = settings.storage.endpoint.strip()
+        self._signing_client: Any = None
         self.server_side_encryption = settings.storage.server_side_encryption
         self.part_size = settings.storage.part_size_bytes
         self._client: Any = None
@@ -226,15 +229,48 @@ class ObjectStorage:
         storage_operations_total.labels(operation="get", outcome="success").inc()
         return data
 
+    @property
+    def signing_client(self) -> Any:
+        """Client used only to sign download links.
+
+        A second client, pointed at the browser-reachable host. Rewriting the
+        host of an already-signed URL does not work: SigV4 covers the Host
+        header, so the swap invalidates the signature and MinIO answers 403 —
+        measured. The URL has to be signed for the host that will serve it.
+
+        Everything else keeps using the internal endpoint, which is faster and
+        does not depend on the public one being reachable from the workers.
+        """
+        if not self.public_endpoint or self.public_endpoint == self.endpoint:
+            return self.client
+        if getattr(self, "_signing_client", None) is None:
+            from minio import Minio
+
+            settings = get_settings().storage
+            self._signing_client = Minio(
+                self.public_endpoint,
+                access_key=settings.access_key,
+                secret_key=settings.secret_key,
+                secure=settings.secure,
+                region=settings.region,
+            )
+        return self._signing_client
+
     def presigned_url(self, key: str, *, ttl_seconds: int | None = None) -> str:
-        """Time-limited download URL. The only way bytes leave the platform."""
+        """Time-limited download URL. The only way bytes leave the platform.
+
+        The host is rewritten to the publicly reachable one when the two
+        differ. A signed URL stays valid through the swap because the signature
+        covers the path, the query and the expiry — not the authority.
+        """
         self.ensure_bucket()
         try:
-            return self.client.presigned_get_object(
+            url = self.signing_client.presigned_get_object(
                 self.bucket,
                 safe_object_key(key),
                 expires=timedelta(seconds=ttl_seconds or self.presigned_ttl),
             )
+            return url
         except Exception as exc:
             storage_operations_total.labels(operation="presign", outcome="failure").inc()
             raise StorageError(

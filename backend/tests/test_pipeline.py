@@ -493,6 +493,23 @@ class TestEnrichmentGate:
     def test_a_tender_without_an_identifier_cannot_be_located(self):
         assert self._gate(has_identifier=False) is False
 
+    def test_the_floor_sits_below_a_thin_notice_score(self):
+        """The floor must not be circular.
+
+        Measured on the live corpus: a Tunisian notice scores on its listing
+        summary — 460 characters — while the publication enrichment would fetch
+        averages 19 783. At a floor of 0.45, three of 154 Tunisian notices ever
+        qualified: they were judged on the thin text, and the thinness of that
+        text is what denied them the rich one.
+
+        0.35 is the observed mean for a thin-but-plausible Tunisian IT notice.
+        The floor has to sit below it, or the pass never reaches the notices it
+        exists for.
+        """
+        from app.workers.tasks.pipeline import ENRICHMENT_MIN_SCORE
+
+        assert ENRICHMENT_MIN_SCORE < 0.32
+
     def test_both_real_sources_declare_detail_support(self):
         from app.connectors.registry import connector_class
 

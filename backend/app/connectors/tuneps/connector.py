@@ -77,6 +77,19 @@ class TunepsConnector(HtmlListingConnector):
         portal's "Objet A.O" field cuts the result set to the matches before a
         single row is parsed.
         """
+        # OR across terms, against a form with a single free-text field: run one
+        # search per term rather than pushing none. Pushing none means paging
+        # the portal's entire catalogue and discarding it locally — thousands of
+        # public-works notices read to find a handful of software ones. Each
+        # search here returns matches, and in-run deduplication collapses a
+        # notice found by several terms.
+        # One term is one term: OR and AND describe the same request, so the
+        # single-keyword case takes the ordinary path and is pushed to the form.
+        if filters.keywords_any and len(filters.keywords) > 1:
+            async for page in self._fetch_per_keyword(filters):
+                yield page
+            return
+
         selectors = self.config.selectors
         paginator = selectors.get("paginator") or {}
         url = self.config.base_url.rstrip("/") + "/" + self.endpoint("search").lstrip("/")
@@ -95,6 +108,47 @@ class TunepsConnector(HtmlListingConnector):
                 return
             self.note_page()
             yield page
+
+    async def _fetch_per_keyword(self, filters: TenderFilters) -> AsyncIterator[FetchedPage]:
+        """One form submission per term, because the field holds only one.
+
+        The base class stops as soon as enough results have accumulated, so a
+        common term usually satisfies the quota before the rarer ones are asked
+        for — the cost stays close to a single search rather than multiplying by
+        the number of terms.
+        """
+        selectors = self.config.selectors
+        paginator = selectors.get("paginator") or {}
+        url = self.config.base_url.rstrip("/") + "/" + self.endpoint("search").lstrip("/")
+        terms = list(filters.keywords)
+        self.log.info("connector.or_search", terms=len(terms))
+
+        for index, term in enumerate(terms, start=1):
+            if self.out_of_time:
+                self.log.warning("connector.deadline_reached_between_terms", done=index - 1)
+                return
+
+            single = filters.model_copy(update={"keywords": [term], "keywords_any": False})
+            actions = self._search_actions(single)
+            # Report the union: the portal honoured the keyword, once per search.
+            self._filter_application.server_side = sorted(
+                set(self._filter_application.server_side) | {"keywords"}
+            )
+
+            async for page in self._browser.render_paginated(
+                url,
+                rows_selector=paginator.get("rows_present") or selectors["list_item"],
+                next_button_selector=paginator.get("next_button")
+                or "button.mat-paginator-navigation-next",
+                max_pages=self.max_pages,
+                settle_ms=1500,
+                actions=actions,
+            ):
+                if self.out_of_time:
+                    self.log.warning("connector.pagination_deadline")
+                    return
+                self.note_page()
+                yield page
 
     def _search_actions(self, filters: TenderFilters) -> list[dict[str, Any]]:
         """Translate canonical filters into interactions with the portal's form.
@@ -117,8 +171,9 @@ class TunepsConnector(HtmlListingConnector):
 
         pushed_keyword: str | None = None
         if filters.keywords and form.get("objet"):
-            if filters.keywords_any:
-                # See docstring: pushing one term would drop valid matches.
+            if filters.keywords_any and len(filters.keywords) > 1:
+                # See docstring: pushing one of several alternatives would drop
+                # valid matches. A lone term has no alternatives to lose.
                 application.client_side.append("keywords")
             else:
                 pushed_keyword = filters.keywords[0]

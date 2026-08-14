@@ -186,9 +186,32 @@ class BaseConnector(ABC):
     def matches_filters(self, tender: NormalizedTender, filters: TenderFilters) -> bool:
         """Client-side filtering for criteria the portal could not express.
 
-        The default implementation covers the criteria that are meaningful on a
-        normalised tender; connectors rarely need to override it.
+        A criterion the portal already applied is **not** re-checked here. That
+        is not an optimisation, it is a correctness rule: the local version is
+        often less expressive than the delegated one, and re-applying it
+        discards results the portal was right to return.
+
+        Two measured cases:
+
+        * asking for the zone "Afrique" sends 55 country codes and the portal
+          answers correctly — then the local check compares each tender's
+          country against the literal string "Afrique" and rejects all 200;
+        * J360 searches a notice's full text while we hold only its title and
+          search-highlight fragments, so a term matched deep in the publication
+          fails our narrower re-check.
+
+        The connector's own ``matches_filters`` override still runs first, for
+        rules that are not filters at all — J360 dropping recruitment notices.
         """
+        delegated = set(self._filter_application.server_side)
+        if delegated:
+            filters = filters.model_copy(
+                update={
+                    name: ([] if isinstance(getattr(filters, name), list) else None)
+                    for name in delegated
+                    if hasattr(filters, name)
+                }
+            )
         return _client_side_match(tender, filters)
 
     # ------------------------------------------------------------------

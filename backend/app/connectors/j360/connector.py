@@ -44,6 +44,7 @@ from app.connectors.models import (
     RawRecord,
     TenderDetailRequest,
 )
+from app.connectors.parsing.links import DocumentLink, harvest_document_links
 from app.connectors.registry import register
 from app.core.exceptions import AuthenticationError, CredentialsMissingError, ParsingError
 from app.schemas.filters import FilterApplication, TenderFilters
@@ -101,7 +102,31 @@ class J360Connector(JsonApiConnector):
         *matches* — asking for forty results reaches forty real tenders instead
         of re-filtering the same two pages of an arbitrary slice.
         """
+        # OR across terms, against a portal that only ANDs: run one search per
+        # term and let the base class union the results. Pushing nothing
+        # instead would mean paging the portal's entire worldwide feed and
+        # discarding it locally — measured at 200 notices read for 1 kept.
+        # Each search here returns actual matches, and in-run deduplication
+        # collapses a notice that satisfies several terms.
+        if filters.keywords_any and len(filters.keywords) > 1:
+            async for page in self._fetch_per_keyword(filters):
+                yield page
+            return
+
         query = self._build_j360_query(filters)
+
+        # Every requested country is unknown to the portal, so no notice can
+        # carry one and the local filter would reject all of them. Crawling to
+        # prove that costs 200 fetches and two minutes; the run report already
+        # names the unrecognised values.
+        if filters.countries and not query.get("countries"):
+            self.log.warning(
+                "connector.search_cannot_match",
+                reason="no_recognised_country",
+                requested=filters.countries,
+            )
+            return
+
         url = f"{self.config.base_url.rstrip('/')}{self.endpoint('search')}"
         if query:
             # YAML booleans would serialise as "True"; the API — and every
@@ -122,6 +147,40 @@ class J360Connector(JsonApiConnector):
         async for page in self._paginate(url):
             yield page
 
+    async def _fetch_per_keyword(self, filters: TenderFilters) -> AsyncIterator[FetchedPage]:
+        """One search per term, because the portal cannot express alternatives.
+
+        The base class stops as soon as enough results have accumulated, so a
+        common term usually satisfies the quota before the rarer ones are ever
+        requested — which keeps the cost close to a single search rather than
+        multiplying it by the number of terms.
+        """
+        terms = list(filters.keywords)
+        self.log.info("connector.or_search", terms=len(terms))
+
+        for index, term in enumerate(terms, start=1):
+            if self.out_of_time:
+                self.log.warning("connector.deadline_reached_between_terms", done=index - 1)
+                return
+
+            single = filters.model_copy(update={"keywords": [term], "keywords_any": False})
+            query = self._build_j360_query(single)
+            # Report the union, not the last term's application: every criterion
+            # was honoured by the portal, once per search.
+            self._filter_application.server_side = sorted(
+                set(self._filter_application.server_side) | {"keywords"}
+            )
+            url = f"{self.config.base_url.rstrip('/')}{self.endpoint('search')}"
+            encoded = {
+                k: ("true" if v is True else "false" if v is False else v)
+                for k, v in query.items()
+            }
+            url = f"{url}?{urlencode(encoded, doseq=True)}"
+
+            self._current_search = {"id": None, "name": f"terme « {term} »"}
+            async for page in self._paginate(url):
+                yield page
+
     def _build_j360_query(self, filters: TenderFilters) -> dict[str, Any]:
         """Translate canonical filters into J360's query parameters.
 
@@ -138,27 +197,79 @@ class J360Connector(JsonApiConnector):
         # Keywords: J360 takes a JSON array of terms, each with an `exact` flag.
         # `exact: false` is substring-ish matching, which is what a user typing
         # "cloud" means — and it is what the portal's own UI sends.
+        # J360 combines `q_simple` terms with AND — measured, and its `op`
+        # parameter makes no difference to the count. So a list of alternatives
+        # cannot be pushed: asking for the seven Inetum domains at once sent 31
+        # terms and returned zero, because no notice contains all of them.
+        #
+        # Under OR semantics we therefore push nothing and filter locally,
+        # exactly as the TUNEPS connector does with its single search field.
+        # Under AND semantics the whole list is safe to send.
         if filters.keywords:
-            if mapping.get("keywords"):
+            if not mapping.get("keywords"):
+                application.client_side.append("keywords")
+            # One term is one term: OR and AND describe the same request, so
+            # there is nothing to disambiguate and it is always safe to send.
+            # Refusing it meant paging the portal's worldwide feed for a single
+            # keyword — measured at 200 notices read and 200 discarded.
+            elif filters.keywords_any and len(filters.keywords) > 1:
+                application.client_side.append("keywords")
+                self.log.info(
+                    "connector.keywords_kept_local",
+                    reason="portal_ands_terms",
+                    count=len(filters.keywords),
+                )
+            else:
                 query[mapping["keywords"]] = json.dumps(
                     [{"value": k, "exact": False} for k in filters.keywords],
                     ensure_ascii=False,
                 )
                 application.server_side.append("keywords")
-            else:
-                application.client_side.append("keywords")
 
         # Countries: repeated parameters, ISO alpha-2. A name we cannot map is
         # kept client-side rather than dropped — silently ignoring it would
         # widen the search behind the user's back.
         if filters.countries:
-            lookup = values.get("countries") or {}
-            codes = [lookup[c] for c in filters.countries if c in lookup]
-            unmapped = [c for c in filters.countries if c not in lookup]
+            # Matched on a folded key. A user typing "tunisie" or "TUNISIE"
+            # means Tunisia; a case-sensitive table silently demoted the filter
+            # to local matching, so the portal returned the world and we threw
+            # most of it away.
+            from app.core.identity import normalize_text
+
+            lookup = {
+                normalize_text(name): [code]
+                for name, code in (values.get("countries") or {}).items()
+            }
+            # A zone resolves to every country it holds. "Afrique" is 55 states;
+            # naming the continent is what a user means, and enumerating them is
+            # what the portal needs.
+            for zone, zone_codes in (values.get("country_zones") or {}).items():
+                lookup.setdefault(normalize_text(zone), list(zone_codes))
+
+            codes: list[str] = []
+            unmapped: list[str] = []
+            for name in filters.countries:
+                resolved = lookup.get(normalize_text(name))
+                if resolved:
+                    codes.extend(c for c in resolved if c not in codes)
+                else:
+                    unmapped.append(name)
             if codes and mapping.get("countries"):
                 query[mapping["countries"]] = codes
                 application.server_side.append("countries")
-            if unmapped or not codes:
+            if unmapped:
+                # The reference table holds every country J360 knows, so a name
+                # it does not contain is a typo rather than a gap. Saying so
+                # beats spending two minutes proving it: local filtering on a
+                # country no notice carries reads the portal's whole feed and
+                # keeps none of it.
+                application.unsupported.extend(unmapped)
+                self.log.warning(
+                    "connector.unknown_countries",
+                    names=unmapped,
+                    hint="absent from J360's own country reference",
+                )
+            if not codes:
                 application.client_side.append("countries")
 
         if filters.sectors and mapping.get("sectors"):
@@ -461,11 +572,24 @@ class J360Connector(JsonApiConnector):
         # awardee and its registration number. `additional_information` is often
         # empty while this is not, so it is fetched for every announcement
         # rather than only when the JSON looks thin.
-        publication = await self._fetch_publication(body.get("external_url"))
+        publication, links = await self._fetch_publication(body.get("external_url"))
         if publication:
             result.extra["publication_text"] = publication
             if len(publication) > len(result.description or ""):
                 result.description = publication
+
+        # The publication body carries its own attachments — "Règlement de
+        # consultation - 1,1 Mo" sits inside the prose, not in the JSON's
+        # document list. Flattening the page to text destroyed them, so the
+        # richest documents a notice offers were the ones never collected.
+        harvested = 0
+        known = {document.url for document in result.documents}
+        for link in links:
+            if link.url in known:
+                continue
+            known.add(link.url)
+            harvested += 1
+            result.documents.append(DocumentRef(url=link.url, name=link.label))
 
         self.log.info(
             "connector.detail_fetched",
@@ -473,19 +597,22 @@ class J360Connector(JsonApiConnector):
             has_budget=result.estimated_budget is not None,
             description_chars=len(result.description or ""),
             documents=len(result.documents),
+            documents_from_publication=harvested,
             source_links=len(result.source_links),
         )
         return None if result.is_empty() else result
 
-    async def _fetch_publication(self, external_url: Any) -> str | None:
-        """Read the signed publication page and return it as plain text.
+    async def _fetch_publication(
+        self, external_url: Any
+    ) -> tuple[str | None, list[DocumentLink]]:
+        """Read the signed publication page: its text, and the files it links to.
 
         Best-effort: the URL carries a time-limited signature, so a stale one
         simply yields nothing and the announcement keeps whatever the JSON gave
         it. Losing this must never cost the tender.
         """
         if not external_url or "j360-ext" not in str(external_url):
-            return None
+            return None, []
         assert self.http is not None
         try:
             page = await self.http.get(
@@ -499,16 +626,21 @@ class J360Connector(JsonApiConnector):
             )
         except Exception as exc:
             self.log.info("connector.publication_unavailable", error=str(exc)[:150])
-            return None
+            return None, []
 
         from bs4 import BeautifulSoup
+
+        # Links are read from the markup before it is flattened, because
+        # `get_text` keeps "Règlement de consultation - 1,1 Mo" and discards the
+        # href that makes it retrievable.
+        links = harvest_document_links(page.text, base_url=str(external_url))
 
         text = BeautifulSoup(page.text, "lxml").get_text("\n", strip=True)
         lines = [line.strip() for line in text.split("\n") if line.strip()]
         # The page opens with the publisher's own name; it is not tender content.
         if lines and lines[0].lower() in {"octopusmind", "j360"}:
             lines = lines[1:]
-        return "\n".join(lines)[:_MAX_PUBLICATION_CHARS] or None
+        return "\n".join(lines)[:_MAX_PUBLICATION_CHARS] or None, links
 
     def _detail_from_body(self, body: dict[str, Any]) -> DetailResult:
         """Map a detail payload onto the canonical result.

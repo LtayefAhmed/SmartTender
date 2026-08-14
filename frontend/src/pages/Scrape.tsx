@@ -6,12 +6,14 @@ import type {
   ConnectorInfo,
   ConnectorRun,
   Page,
+  ReferenceData,
   ScrapeJob,
 } from "../api/types";
 import { TopBar } from "../components/Layout";
 import { Badge, Card, Meter, Loading, Spinner, Empty } from "../components/ui";
 import { TagInput } from "../components/TagInput";
 import { DomainPicker } from "../components/DomainPicker";
+import { Combobox } from "../components/Combobox";
 import { useToast } from "../components/toast";
 import {
   fmtDuration,
@@ -38,8 +40,22 @@ export function Scrape() {
   const [countries, setCountries] = useState<string[]>([]);
   const [sectors, setSectors] = useState<string[]>([]);
   const [maxResults, setMaxResults] = useState(20);
+  // Picking business domains means "anything matching ANY of these", never
+  // "everything at once". Selecting the seven Inetum domains injects 31 terms;
+  // treated as a conjunction they describe a tender that cannot exist, and
+  // every portal returned zero.
+  const [matchAny, setMatchAny] = useState(true);
   const [publishedWithin, setPublishedWithin] = useState<number | "">("");
   const [launching, setLaunching] = useState(false);
+
+  // The vocabularies the portals define. Offering them beats free text: a
+  // country typed by hand went unrecognised and cost a two-minute crawl that
+  // returned nothing.
+  const refs = useQuery({
+    queryKey: ["reference-data"],
+    queryFn: () => api.get<ReferenceData>("/admin/reference-data"),
+    staleTime: 10 * 60 * 1000,
+  });
 
   const jobs = useQuery({
     queryKey: ["jobs"],
@@ -54,6 +70,7 @@ export function Scrape() {
         connectors: selected,
         filters: {
           keywords,
+          keywords_any: matchAny,
           countries,
           sectors,
           max_results_per_source: maxResults,
@@ -135,18 +152,58 @@ export function Scrape() {
               <div className="field">
                 <label>Mots-clés envoyés aux portails</label>
                 <TagInput value={keywords} onChange={setKeywords} placeholder="développement, maintenance…" />
+                <div className="row tiny" style={{ marginTop: 6, gap: 14 }}>
+                  <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      checked={matchAny}
+                      onChange={() => setMatchAny(true)}
+                    />
+                    au moins un mot-clé
+                  </label>
+                  <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      checked={!matchAny}
+                      onChange={() => setMatchAny(false)}
+                    />
+                    tous les mots-clés
+                  </label>
+                </div>
                 <div className="tiny muted" style={{ marginTop: 4 }}>
                   Alimentés par les domaines ci-dessus, ou saisis librement.
+                  {matchAny
+                    ? " « Au moins un » convient aux domaines : une offre ERP n'est pas aussi une offre SIRH."
+                    : " « Tous » restreint fortement — utile pour deux ou trois termes précis."}
                 </div>
               </div>
               <div className="grid cols-2" style={{ gap: 14 }}>
                 <div className="field">
-                  <label>Pays</label>
-                  <TagInput value={countries} onChange={setCountries} placeholder="Tunisie…" />
+                  <label>Pays ({refs.data?.countries.length ?? 0} référencés)</label>
+                  <Combobox
+                    value={countries}
+                    onChange={setCountries}
+                    options={[
+                      ...(refs.data?.zones ?? []).map((z) => ({
+                        name: z.name,
+                        hint: `zone · ${z.count} pays`,
+                      })),
+                      ...(refs.data?.countries ?? []).map((c) => ({
+                        name: c.name,
+                        hint: c.code,
+                      })),
+                    ]}
+                    placeholder="Tapez : tuni, maroc, afrique…"
+                  />
                 </div>
                 <div className="field">
-                  <label>Secteurs</label>
-                  <TagInput value={sectors} onChange={setSectors} placeholder="Technologies…" />
+                  <label>Activités</label>
+                  <Combobox
+                    value={sectors}
+                    onChange={setSectors}
+                    options={(refs.data?.activities ?? []).map((a) => ({ name: a.name }))}
+                    placeholder="Développement informatique…"
+                  />
                 </div>
               </div>
               <div className="grid cols-2" style={{ gap: 14 }}>
@@ -293,7 +350,19 @@ function RunDiagnosis({ run }: { run: ConnectorRun }) {
   }
   if (parsed == null) return null;
 
+  // Zero rows is only alarming when there were rows to miss. A JSON API that
+  // answers {"count": 0, "results": []} has been read correctly — parsing
+  // nothing is the right outcome, and calling it a broken selector sends
+  // someone hunting a bug that does not exist.
   if (parsed === 0 && run.pages_fetched > 0) {
+    if (run.extra?.stop_reason === "source_exhausted") {
+      return (
+        <span className="tiny muted">
+          Le portail n'a renvoyé aucune offre pour ces critères — essayez « au moins un
+          mot-clé », ou moins de filtres
+        </span>
+      );
+    }
     return (
       <span className="tiny" style={{ color: "var(--red)" }}>
         ⚠ {run.pages_fetched} page(s) lues, 0 ligne extraite — sélecteurs probablement obsolètes
@@ -309,7 +378,19 @@ function RunDiagnosis({ run }: { run: ConnectorRun }) {
           {dupes > 0 && `, ${dupes} doublon(s)`} — les sélecteurs fonctionnent
         </div>
       )}
+      <UnsupportedCriteria names={run.extra?.filter_application?.unsupported} />
       <StopReason reason={run.extra?.stop_reason} parsed={parsed} />
+    </div>
+  );
+}
+
+/** Criteria the portal could not understand at all — almost always a typo. */
+function UnsupportedCriteria({ names }: { names?: string[] }) {
+  if (!names?.length) return null;
+  return (
+    <div style={{ color: "var(--amber, #FFB454)" }}>
+      ⚠ Non reconnu : {names.join(", ")} — vérifiez l'orthographe, ce critère n'a pas
+      été appliqué
     </div>
   );
 }

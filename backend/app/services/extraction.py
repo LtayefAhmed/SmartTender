@@ -36,7 +36,63 @@ from app.core.metrics import observe_stage
 
 logger = get_logger(__name__)
 
-__all__ = ["DocumentExtractor", "ExtractedText", "get_extractor"]
+__all__ = [
+    "DOCUMENT_MARKER",
+    "DocumentExtractor",
+    "ExtractedText",
+    "document_priority",
+    "get_extractor",
+]
+
+#: Filename fragments that mark the substantive pieces of a French public
+#: procurement dossier. CCTP, CCAP and the règlement de consultation carry the
+#: requirements; ATTRI, DC1 and DC2 are forms a bidder fills in rather than
+#: reads. Names are the only signal available before a file is opened, and
+#: French procurement is regular enough about them to make this worth using.
+_IMPORTANT_MARKERS = (
+    "cctp", "ccap", "cdc", "cahier", "reglement", "règlement", "_rc", "rc_",
+    "dce", "consultation", "technique", "cahier des charges", "annexe technique",
+)
+
+
+#: Opens each document inside a merged block of text. Two consumers rely on it:
+#: a tender merges its attachments, and an archive merges its members. Chosen
+#: to be unmistakable in prose and trivial to split on — downstream, a
+#: 440 000-character tender is far too long to embed as one vector, so it must
+#: be chunked, and a chunk is only useful if you know whether it came from the
+#: CCTP or from a privacy notice nobody reads.
+DOCUMENT_MARKER = "\n===== DOCUMENT:"
+_DOCUMENT_MARKER = DOCUMENT_MARKER
+
+
+@dataclass(slots=True)
+class _OcrBudget:
+    """Pages of OCR still allowed, shared across one extraction.
+
+    ``max_ocr_pages`` bounds a single document, which was enough while a
+    document was the unit of work. An archive changed that: a dossier holding
+    twenty scanned PDFs would spend twenty times the intended budget, and one
+    consultation could occupy an OCR worker for the better part of an hour.
+    The bound has to be shared by everything one call touches.
+    """
+
+    remaining: int
+
+    def take(self, wanted: int) -> int:
+        granted = max(0, min(wanted, self.remaining))
+        self.remaining -= granted
+        return granted
+
+
+def document_priority(name: str | None) -> int:
+    """0 for a substantive document, 1 for anything else.
+
+    Used wherever a cap can bind — the attachment limit, the archive member
+    limit — so that what gets dropped is the administrative filler and not the
+    specification.
+    """
+    lowered = (name or "").lower()
+    return 0 if any(marker in lowered for marker in _IMPORTANT_MARKERS) else 1
 
 _WHITESPACE = re.compile(r"[ \t ]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
@@ -119,11 +175,15 @@ class DocumentExtractor:
         self.max_pdf_pages = settings.max_pdf_pages
         self.max_chars = settings.max_chars_per_document
         self.max_document_bytes = settings.max_document_bytes
+        self.archive_max_members = settings.archive_max_members
+        self.archive_max_total_bytes = settings.archive_max_total_bytes
+        self.archive_max_depth = settings.archive_max_depth
         self._ocr_available: bool | None = None
 
     # ------------------------------------------------------------------
     def extract(self, content: bytes, *, content_type: str | None = None,
-                filename: str | None = None) -> ExtractedText:
+                filename: str | None = None, _depth: int = 0,
+                _ocr_budget: _OcrBudget | None = None) -> ExtractedText:
         """Extract text from a document, dispatching on its real type."""
         if not self.enabled:
             return ExtractedText(method="none", error="Extraction is disabled.")
@@ -135,10 +195,14 @@ class DocumentExtractor:
                 error=f"Document exceeds the {self.max_document_bytes} byte extraction limit.",
             )
 
+        # A top-level document gets the full per-document allowance; members of
+        # an archive share one, handed down by the caller.
+        budget = _ocr_budget or _OcrBudget(self.max_ocr_pages)
+
         kind = self._detect(content, content_type, filename)
         with observe_stage("extract"):
             if kind == "pdf":
-                return self._extract_pdf(content)
+                return self._extract_pdf(content, budget)
             if kind == "docx":
                 return self._extract_docx(content)
             if kind == "html":
@@ -148,6 +212,12 @@ class DocumentExtractor:
                     content.decode("utf-8", errors="replace"), max_chars=self.max_chars
                 )
                 return ExtractedText(text=text, method="digital", truncated=truncated)
+            if kind == "zip":
+                return self._extract_archive(content, depth=_depth, budget=budget)
+            if kind == "7z":
+                return self._extract_7z(content, depth=_depth, budget=budget)
+            if kind == "xlsx":
+                return self._extract_xlsx(content)
 
         return ExtractedText(method="none", error=f"Unsupported document type '{kind}'.")
 
@@ -167,10 +237,21 @@ class DocumentExtractor:
             # A declared .html with a text/plain sniff is still HTML.
             suffix = (filename or "").lower()
             return "html" if suffix.endswith((".html", ".htm")) else "text"
+        # Checked after the OOXML formats above, which are themselves ZIPs: a
+        # .docx reaching the archive branch would be read as a bag of XML parts
+        # instead of a document.
+        if mime in {"application/zip", "application/x-zip-compressed"}:
+            return "zip"
+        if "spreadsheetml" in mime:
+            return "xlsx"
+        # 7-Zip has no registered MIME of its own in most sniffers, so it
+        # arrives as octet-stream; the six-byte signature is unambiguous.
+        if content[:6] == b"7z\xbc\xaf\x27\x1c":
+            return "7z"
         return mime
 
     # ------------------------------------------------------------------
-    def _extract_pdf(self, content: bytes) -> ExtractedText:
+    def _extract_pdf(self, content: bytes, budget: _OcrBudget) -> ExtractedText:
         """Digital text first, per-page OCR only where it came back empty."""
         try:
             from pypdf import PdfReader
@@ -212,12 +293,13 @@ class DocumentExtractor:
 
         pages_ocr = 0
         if needs_ocr and self.ocr_enabled and self._ensure_ocr():
-            budget = needs_ocr[: self.max_ocr_pages]
-            if len(needs_ocr) > self.max_ocr_pages:
+            granted = budget.take(len(needs_ocr))
+            selected = needs_ocr[:granted]
+            if granted < len(needs_ocr):
                 warnings.append(
-                    f"{len(needs_ocr)} pages needed OCR; only {self.max_ocr_pages} were processed."
+                    f"{len(needs_ocr)} pages needed OCR; only {granted} were processed."
                 )
-            recovered = self._ocr_pages(content, budget)
+            recovered = self._ocr_pages(content, selected) if selected else {}
             for index, text in recovered.items():
                 if text.strip():
                     page_texts[index] = text
@@ -381,6 +463,223 @@ class DocumentExtractor:
             method="digital" if text else "none",
             truncated=truncated,
             error=None if text else "No readable text found in the HTML.",
+        )
+
+    def _extract_archive(self, content: bytes, *, depth: int,
+                         budget: _OcrBudget) -> ExtractedText:
+        """Read every member of a ZIP, recursively.
+
+        Buyers frequently publish the entire dossier as a single archive, so an
+        unopened ZIP can hide the CCTP itself. Recursion is bounded on three
+        independent axes because an archive is attacker-controlled input: a few
+        kilobytes can expand to gigabytes, an archive can contain itself, and
+        the member count is unbounded. Exceeding a bound is reported as a
+        warning rather than an error — partial content plus a visible note is
+        worth more than a silent nothing.
+        """
+        import io
+        import zipfile
+
+        if depth >= self.archive_max_depth:
+            return ExtractedText(
+                method="none",
+                error=f"Nested archives beyond depth {self.archive_max_depth} are not opened.",
+            )
+
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(content))
+        except Exception as exc:
+            return ExtractedText(method="none", error=f"Unreadable archive: {exc}")
+
+        members = [entry for entry in archive.infolist() if not entry.is_dir() and entry.file_size]
+        # Most important first, so a binding member cap drops the filler.
+        members.sort(key=lambda entry: (document_priority(entry.filename), entry.filename))
+
+        read: list[tuple[str, bytes]] = []
+        warnings: list[str] = []
+        # Named apart from the OCR budget: they bound different resources and
+        # sharing the name once cost an afternoon.
+        size_budget = self.archive_max_total_bytes
+
+        if len(members) > self.archive_max_members:
+            warnings.append(
+                f"Archive holds {len(members)} files; only the "
+                f"{self.archive_max_members} most relevant were read."
+            )
+            members = members[: self.archive_max_members]
+
+        for entry in members:
+            if entry.flag_bits & 0x1:
+                warnings.append(f"{entry.filename}: encrypted, not read.")
+                continue
+            # The budget is the real defence against a zip bomb. It is checked
+            # against the *declared* size before decompressing, which is safe
+            # here only because zipfile stops a read at the declared size: a
+            # member cannot expand past its own header, so the running total
+            # cannot be exceeded by lying about it.
+            if entry.file_size > size_budget:
+                warnings.append(f"{entry.filename}: skipped, archive size budget exhausted.")
+                continue
+            try:
+                with archive.open(entry) as handle:
+                    payload = handle.read()
+            except Exception as exc:
+                warnings.append(f"{entry.filename}: unreadable ({type(exc).__name__}).")
+                continue
+
+            size_budget -= len(payload)
+            read.append((entry.filename, payload))
+
+        return self._merge_members(read, depth=depth, warnings=warnings, budget=budget)
+
+    def _extract_7z(self, content: bytes, *, depth: int,
+                    budget: _OcrBudget) -> ExtractedText:
+        """Read a 7-Zip dossier.
+
+        Which archive format a buyer used is not a property of the tender, so
+        supporting one and not the other would lose documents for an arbitrary
+        reason. py7zr has no incremental per-member API, hence the size check
+        happens before extraction rather than during it.
+        """
+        import io
+
+        if depth >= self.archive_max_depth:
+            return ExtractedText(
+                method="none",
+                error=f"Nested archives beyond depth {self.archive_max_depth} are not opened.",
+            )
+        try:
+            import py7zr
+        except ImportError:  # pragma: no cover - the container always has it
+            return ExtractedText(method="none", error="7z support is not installed.")
+
+        import pathlib
+        import tempfile
+
+        warnings: list[str] = []
+        read: list[tuple[str, bytes]] = []
+
+        # py7zr dropped its in-memory reader, so members land on disk. The
+        # directory is temporary and removed on the way out; nothing survives
+        # the call.
+        with tempfile.TemporaryDirectory(prefix="smarttender-7z-") as workspace:
+            root = pathlib.Path(workspace).resolve()
+            try:
+                with py7zr.SevenZipFile(io.BytesIO(content)) as archive:
+                    if archive.needs_password():
+                        return ExtractedText(method="none", error="Archive is encrypted.")
+                    entries = [entry for entry in archive.list() if not entry.is_directory]
+                    total = sum(entry.uncompressed for entry in entries)
+                    if total > self.archive_max_total_bytes:
+                        return ExtractedText(
+                            method="none",
+                            error=(
+                                f"Archive expands to {total} bytes, "
+                                "above the extraction budget."
+                            ),
+                        )
+                    names = sorted(
+                        (entry.filename for entry in entries),
+                        key=lambda name: (document_priority(name), name),
+                    )
+                    if len(names) > self.archive_max_members:
+                        warnings.append(
+                            f"Archive holds {len(names)} files; only the "
+                            f"{self.archive_max_members} most relevant were read."
+                        )
+                        names = names[: self.archive_max_members]
+                    archive.extract(path=workspace, targets=names)
+            except Exception as exc:
+                return ExtractedText(method="none", error=f"Unreadable archive: {exc}")
+
+            for name in names:
+                member = (root / name).resolve()
+                # An archive can name a member "../../etc/passwd". Writing
+                # outside the workspace is the extraction step's problem;
+                # *reading* what landed outside it would be ours.
+                if not member.is_relative_to(root) or not member.is_file():
+                    warnings.append(f"{name}: skipped, resolved outside the extraction directory.")
+                    continue
+                try:
+                    read.append((name, member.read_bytes()))
+                except Exception as exc:
+                    warnings.append(f"{name}: unreadable ({type(exc).__name__}).")
+
+        return self._merge_members(read, depth=depth, warnings=warnings, budget=budget)
+
+    def _merge_members(
+        self, members: list[tuple[str, bytes]], *, depth: int,
+        warnings: list[str], budget: _OcrBudget,
+    ) -> ExtractedText:
+        """Extract each archive member and merge the results.
+
+        Shared by every archive format so a dossier reads identically whichever
+        tool the buyer packed it with.
+        """
+        collected: list[str] = []
+        methods: set[str] = set()
+        pages_ocr = 0
+
+        for name, payload in members:
+            inner = self.extract(payload, filename=name, _depth=depth + 1, _ocr_budget=budget)
+            if inner.ok:
+                collected.append(f"{_DOCUMENT_MARKER} {name}\n{inner.text}")
+                methods.add(inner.method)
+                pages_ocr += inner.pages_ocr
+            elif inner.error:
+                warnings.append(f"{name}: {inner.error}")
+            warnings.extend(f"{name}: {warning}" for warning in inner.warnings)
+
+        text, truncated = clean_extracted_text("\n\n".join(collected), max_chars=self.max_chars)
+        method = methods.pop() if len(methods) == 1 else ("mixed" if methods else "none")
+        return ExtractedText(
+            text=text,
+            method=method,
+            pages_ocr=pages_ocr,
+            truncated=truncated,
+            warnings=warnings,
+            error=None if text else "No readable text found in the archive.",
+        )
+
+    def _extract_xlsx(self, content: bytes) -> ExtractedText:
+        """Flatten a spreadsheet to text, sheet by sheet.
+
+        A procurement dossier's spreadsheets are not incidental: the BPU and
+        the DQE hold the price structure, and annexes named "Exigences,
+        pénalités, livrables et indicateurs" are the requirements matrix
+        itself. Formulas are skipped in favour of cached values — a matcher
+        needs "99,5 % de disponibilité", not "=B4*C4".
+        """
+        import io
+
+        try:
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        except Exception as exc:
+            return ExtractedText(method="none", error=f"Unreadable spreadsheet: {exc}")
+
+        lines: list[str] = []
+        try:
+            for sheet in workbook.worksheets:
+                lines.append(f"[{sheet.title}]")
+                for row in sheet.iter_rows(values_only=True):
+                    cells = [str(cell).strip() for cell in row if cell not in (None, "")]
+                    if cells:
+                        # Tab-separated: a row is one line, so a requirement and
+                        # its target value stay adjacent after chunking.
+                        lines.append("\t".join(cells))
+        except Exception as exc:
+            lines.append(f"[lecture interrompue: {exc}]")
+        finally:
+            workbook.close()
+
+        text, truncated = clean_extracted_text("\n".join(lines), max_chars=self.max_chars)
+        return ExtractedText(
+            text=text,
+            method="digital" if text else "none",
+            truncated=truncated,
+            error=None if text else "No readable text found in the spreadsheet.",
         )
 
 

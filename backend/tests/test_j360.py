@@ -319,12 +319,30 @@ class TestServerSideFiltering:
         assert sorted(query["countries"]) == ["MR", "TN"]
 
     def test_an_unmappable_country_falls_back_to_local_filtering(self):
-        """Dropping it would silently widen the search — the user asked for
-        Japan and would receive the world without being told."""
-        connector, query = self._query(countries=["Japon"])
+        """Dropping it would silently widen the search — the user asked for a
+        place and would receive the world without being told."""
+        connector, query = self._query(countries=["Atlantide"])
 
-        assert "countries" not in query or "JP" not in (query.get("countries") or [])
+        assert not query.get("countries")
         assert "countries" in connector._filter_application.client_side
+
+    def test_the_reference_table_covers_the_portals_own_catalogue(self):
+        """227 countries read from GET /api/countries. The hand-written table it
+        replaced held nine, so a search on Madagascar, Pakistan or Poland — all
+        present in the collected data — silently degraded to local filtering and
+        read 200 notices to keep none."""
+        values = load_connector_config("j360").filter_values
+
+        assert len(values["countries"]) > 200
+        for name, code in (("Japon", "JP"), ("Madagascar", "MG"), ("Pologne", "PL")):
+            assert values["countries"][name] == code
+
+    def test_geographic_zones_are_available(self):
+        """"Afrique" is 55 countries; naming a continent beats listing states."""
+        zones = load_connector_config("j360").filter_values["country_zones"]
+
+        assert len(zones["Afrique"]) > 40
+        assert "TN" in zones["Afrique"]
 
     def test_sectors_become_trade_ids(self):
         _, query = self._query(sectors=["Consulting IT", "Développement informatique"])
@@ -581,8 +599,8 @@ class TestThePublicationIsTheRichestSource:
         originating portals, which need their own credentials."""
         import asyncio
 
-        assert asyncio.run(connector._fetch_publication("https://www.un.org/notice")) is None
-        assert asyncio.run(connector._fetch_publication(None)) is None
+        assert asyncio.run(connector._fetch_publication("https://www.un.org/notice")) == (None, [])
+        assert asyncio.run(connector._fetch_publication(None)) == (None, [])
 
 
 class TestThePublicationIsNotTruncated:
@@ -602,3 +620,169 @@ class TestThePublicationIsNotTruncated:
         # first cap was lifted; the ceiling exists for a runaway page, not for
         # ordinary notices.
         assert _MAX_PUBLICATION_CHARS >= 100_000
+
+
+class TestKeywordCombination:
+    """J360 ANDs the terms in `q_simple` — measured against the live API:
+
+        aucun filtre                    181 186
+        1 terme  "logiciel"               1 446
+        2 termes op=AND                      32
+        2 termes op=OR                       32   <- identical
+
+    Its `op` parameter makes no difference, so a list of alternatives cannot be
+    delegated. Selecting the seven Inetum domains sends 31 terms and describes
+    a notice that cannot exist; every portal returned zero and the interface
+    blamed the selectors.
+    """
+
+    def _query(self, **kwargs):
+        connector = J360Connector(load_connector_config("j360"))
+        return connector, connector._build_j360_query(TenderFilters(**kwargs))
+
+    def test_alternatives_are_not_delegated_to_a_portal_that_ands(self):
+        connector, query = self._query(
+            keywords=["ERP", "SIRH", "CRM", "intelligence artificielle"], keywords_any=True
+        )
+
+        assert "q_simple" not in query
+        assert "keywords" in connector._filter_application.client_side
+        assert "keywords" not in connector._filter_application.server_side
+
+    def test_a_conjunction_is_still_pushed(self):
+        """"All of these terms" is exactly what q_simple expresses."""
+        connector, query = self._query(keywords=["cloud", "securite"], keywords_any=False)
+
+        assert json.loads(query["q_simple"]) == [
+            {"value": "cloud", "exact": False},
+            {"value": "securite", "exact": False},
+        ]
+        assert "keywords" in connector._filter_application.server_side
+
+    def test_countries_are_still_delegated_under_or_semantics(self):
+        """Only the keyword list is affected; the other criteria are unrelated."""
+        connector, query = self._query(
+            keywords=["ERP", "CRM"], keywords_any=True, countries=["Tunisie"]
+        )
+
+        assert query["countries"] == ["TN"]
+        assert "countries" in connector._filter_application.server_side
+
+
+class TestASingleKeywordIsAlwaysDelegated:
+    """OR and AND describe the same request when there is one term.
+
+    Refusing to push it meant paging the portal's worldwide feed for a single
+    keyword: measured at 200 notices read, 200 discarded, 0 kept — while the
+    same search delegated to the portal returns 3 matches directly.
+    """
+
+    def _query(self, **kwargs):
+        connector = J360Connector(load_connector_config("j360"))
+        return connector, connector._build_j360_query(TenderFilters(**kwargs))
+
+    def test_one_term_under_or_semantics_is_pushed(self):
+        connector, query = self._query(keywords=["ERP"], keywords_any=True)
+
+        assert json.loads(query["q_simple"]) == [{"value": "ERP", "exact": False}]
+        assert "keywords" in connector._filter_application.server_side
+
+    def test_several_terms_under_or_semantics_are_not(self):
+        connector, query = self._query(keywords=["ERP", "SIRH"], keywords_any=True)
+
+        assert "q_simple" not in query
+        assert "keywords" in connector._filter_application.client_side
+
+
+class TestCountryMatchingIgnoresCaseAndAccents:
+    """A user typing "tunisie" means Tunisia.
+
+    The lookup was case-sensitive, so a lowercase entry silently demoted the
+    filter to local matching: the portal returned the world and 200 of 200
+    notices were then discarded. Silent demotion is the dangerous part — the
+    run still reported success.
+    """
+
+    def _codes(self, *countries):
+        connector = J360Connector(load_connector_config("j360"))
+        query = connector._build_j360_query(TenderFilters(countries=list(countries)))
+        return query.get("countries"), connector._filter_application
+
+    def test_lowercase_is_matched(self):
+        codes, application = self._codes("tunisie")
+        assert codes == ["TN"]
+        assert "countries" in application.server_side
+
+    def test_uppercase_is_matched(self):
+        assert self._codes("TUNISIE")[0] == ["TN"]
+
+    def test_a_missing_accent_is_matched(self):
+        assert self._codes("algerie")[0] == ["DZ"]
+
+    def test_an_unknown_country_still_falls_back_locally(self):
+        """Dropping it would silently widen the search."""
+        codes, application = self._codes("Atlantide")
+        assert not codes
+        assert "countries" in application.client_side
+
+
+class TestAnImpossibleSearchIsNotCrawled:
+    """When every requested country is unknown, the answer is provably empty.
+
+    Measured before this guard: 200 notices fetched and 200 discarded, over two
+    minutes, to establish that no tender is located in a misspelled country.
+    The run report already names the unrecognised value, so the crawl adds
+    nothing but delay.
+    """
+
+    def test_an_unknown_country_alone_short_circuits(self):
+        connector = J360Connector(load_connector_config("j360"))
+        query = connector._build_j360_query(TenderFilters(countries=["Atlantide"]))
+
+        assert not query.get("countries")
+        assert connector._filter_application.unsupported == ["Atlantide"]
+
+    def test_one_valid_country_among_unknowns_still_searches(self):
+        """Tunisia is delegable; the typo beside it must not cancel the search."""
+        connector = J360Connector(load_connector_config("j360"))
+        query = connector._build_j360_query(
+            TenderFilters(countries=["Tunisie", "Atlantide"])
+        )
+
+        assert query["countries"] == ["TN"]
+        assert connector._filter_application.unsupported == ["Atlantide"]
+
+
+class TestGeographicZones:
+    """Naming a continent beats enumerating its states.
+
+    Inetum watches Tunisia and Mauritania first, then West Africa. "Afrique"
+    resolves to the 55 codes J360 itself groups under that zone, so the portal
+    receives an explicit list while the user types one word.
+    """
+
+    def _codes(self, *countries):
+        connector = J360Connector(load_connector_config("j360"))
+        query = connector._build_j360_query(TenderFilters(countries=list(countries)))
+        return query.get("countries") or [], connector._filter_application
+
+    def test_a_zone_expands_to_its_countries(self):
+        codes, application = self._codes("Afrique")
+
+        assert len(codes) > 40
+        assert "TN" in codes and "MR" in codes
+        assert not application.unsupported
+
+    def test_a_zone_and_a_country_combine(self):
+        codes, _ = self._codes("Afrique", "France")
+
+        assert "FR" in codes and "TN" in codes
+
+    def test_no_duplicate_codes(self):
+        """Tunisia is in Afrique; naming both must not send TN twice."""
+        codes, _ = self._codes("Afrique", "Tunisie")
+
+        assert len(codes) == len(set(codes))
+
+    def test_a_zone_is_matched_without_its_accents(self):
+        assert self._codes("afrique")[0]

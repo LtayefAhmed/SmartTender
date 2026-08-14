@@ -238,3 +238,45 @@ async def business_domains(_: Principal = Depends(require_principal)) -> dict[st
             if p.get("name")
         ],
     }
+
+
+@router.get("/reference-data", summary="Countries and activities offered by the sources")
+async def reference_data(_: Principal = Depends(require_principal)) -> dict[str, Any]:
+    """Vocabularies a search form should offer rather than let anyone type.
+
+    Both lists come from J360's own reference endpoints, frozen into its
+    connector configuration. Serving them lets the interface propose exactly
+    what the portal understands, instead of accepting free text and discovering
+    afterwards that "tunisie" was not recognised — a typo that used to cost a
+    two-minute crawl returning nothing.
+
+    ``activities`` is deliberately not called "sectors": J360 names them
+    *activités*, and matching the portal's own wording is what lets a user
+    recognise the field they saw on its site.
+    """
+    from app.connectors.registry import get_registry
+
+    registry = get_registry()
+    registry.load()
+    try:
+        values = registry.config("j360").filter_values
+    except Exception:
+        return {"countries": [], "zones": [], "activities": []}
+
+    countries = values.get("countries") or {}
+    zones = values.get("country_zones") or {}
+    activities = values.get("sectors") or {}
+
+    return {
+        "countries": [
+            {"name": name, "code": code} for name, code in sorted(countries.items())
+        ],
+        # A zone stands for every country it holds: "Afrique" beats naming
+        # fifty-five states one by one.
+        "zones": [
+            {"name": name, "count": len(codes)} for name, codes in sorted(zones.items())
+        ],
+        "activities": [
+            {"name": name, "id": identifier} for name, identifier in sorted(activities.items())
+        ],
+    }

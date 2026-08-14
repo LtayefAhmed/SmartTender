@@ -1,13 +1,121 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
-import type { DashboardStats, Page, TenderSummary, Source } from "../api/types";
+import type { CompletenessStats, DashboardStats, Page, TenderSummary, Source } from "../api/types";
 import { TopBar } from "../components/Layout";
 import { Badge, Card, Meter, StatTile, Loading, ErrorState, Dot } from "../components/ui";
 import { BAND_COLOR, BAND_LABEL, fmtDate, healthColor } from "../lib/format";
 import type { RelevanceBand } from "../api/types";
 
 const SOURCE_TONE = ["var(--teal)", "var(--blue)", "var(--amber)", "var(--violet)", "var(--rose)"];
+
+/**
+ * "What are we missing?" — the question no other panel answers.
+ *
+ * Three real losses were found by hand rather than by any failure: a document
+ * cap that dropped the règlement de consultation while keeping the forms,
+ * archives stored but never opened, and links inside a publication that
+ * nothing followed. None of them raised an error, so none of them appeared
+ * anywhere. A corpus feeding CV matching cannot afford invisible gaps.
+ */
+function CompletenessCard() {
+  const q = useQuery({
+    queryKey: ["completeness"],
+    queryFn: () => api.get<CompletenessStats>("/tenders/stats/completeness"),
+    refetchInterval: 30000,
+  });
+
+  if (q.isLoading) return <Card title="Complétude du corpus"><Loading /></Card>;
+  if (q.error) return <Card title="Complétude du corpus"><ErrorState error={q.error} /></Card>;
+  const c = q.data!;
+
+  const gaps = [
+    {
+      label: "Sans aucune pièce stockée",
+      value: c.tenders_without_stored_document,
+      hint: "l'avis seul, sans cahier des charges",
+    },
+    {
+      label: "Sans texte exploitable",
+      value: c.tenders_without_text,
+      hint: "ni publication ni pièce lisible",
+    },
+    {
+      // A publication states the object; only a dossier states the required
+      // skills. The two must not be counted as one.
+      label: "Sans dossier lu",
+      value: c.tenders_in_scope - c.tenders_with_dossier_text,
+      hint: "publication seule — insuffisant pour matcher des CV",
+    },
+    {
+      label: "Texte trop court",
+      value: c.tenders_with_thin_text,
+      hint: `moins de ${c.thin_text_threshold_chars.toLocaleString("fr-FR")} caractères`,
+    },
+    {
+      // The quietest loss of all: the tender looks complete, the character
+      // count looks impressive, and the tail of the dossier is simply gone.
+      label: "Texte tronqué",
+      value: c.tenders_with_truncated_text,
+      hint: `plafond de ${c.text_cap_chars.toLocaleString("fr-FR")} caractères atteint`,
+    },
+  ];
+  const worst = Math.max(1, ...gaps.map((g) => g.value));
+
+  return (
+    <Card
+      title="Complétude du corpus"
+      hint={<span className="tiny muted">{c.tenders_in_scope} offres retenues</span>}
+    >
+      <div className="grid cols-2">
+        <div className="stack" style={{ gap: 12 }}>
+          {gaps.map((gap) => (
+            <div key={gap.label} className="bar-row" style={{ marginBottom: 0 }}>
+              <div className="bl">
+                {gap.label}
+                <div className="tiny muted">{gap.hint}</div>
+              </div>
+              <div className="bt">
+                <Meter
+                  value={gap.value / worst}
+                  color={gap.value === 0 ? "var(--teal)" : "var(--amber)"}
+                />
+              </div>
+              <div className="bv">{gap.value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="stack" style={{ gap: 10 }}>
+          <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+            {Object.entries(c.documents_by_status).map(([status, count]) => (
+              <Badge key={status} color={status === "stored" ? "teal" : status === "failed" ? "rose" : "gray"}>
+                {count} {status}
+              </Badge>
+            ))}
+            {Object.keys(c.documents_by_status).length === 0 && (
+              <span className="muted tiny">Aucune pièce jointe collectée.</span>
+            )}
+          </div>
+          {/* Grouped by reason so a systematic cause — an expired signature, a
+              portal demanding a login — reads as one number instead of many. */}
+          {c.document_failures.map((failure) => (
+            <div key={failure.reason} className="row tiny">
+              <Badge color="rose">{failure.count}</Badge>
+              <span className="muted" style={{ marginLeft: 8 }}>{failure.reason}</span>
+            </div>
+          ))}
+          {c.extraction_errors.map((failure) => (
+            <div key={failure.reason} className="row tiny">
+              <Badge color="amber">{failure.count}</Badge>
+              <span className="muted" style={{ marginLeft: 8 }}>{failure.reason}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 export function Dashboard() {
   const stats = useQuery({
@@ -175,6 +283,8 @@ export function Dashboard() {
             </div>
           )}
         </Card>
+
+        <CompletenessCard />
 
         <Card title="Santé des sources" hint={<Link to="/sources" className="badge blue">Détails →</Link>}>
           <div className="grid cols-3">

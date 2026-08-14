@@ -57,6 +57,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-fra \
         tesseract-ocr-eng \
+        # Arabic: Tunisian and Moroccan notices carry an Arabic header beside
+        # the French body, and scanned ones are sometimes Arabic throughout.
+        # Without the pack Tesseract reads those glyphs as Latin and produces
+        # confident nonsense — measured on a real upload, the French came out
+        # 99.9% legible while the Arabic header became "jloill camigill plan".
+        tesseract-ocr-ara \
         libgl1 \
         libglib2.0-0 \
         curl \

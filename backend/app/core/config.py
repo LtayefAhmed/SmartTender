@@ -111,6 +111,12 @@ class RedisSettings(_Base):
 
 class StorageSettings(_Base):
     endpoint: str = "localhost:9000"
+    #: Host to put in presigned download links. The workers reach MinIO through
+    #: the container network ("minio:9000"), which no browser can resolve — a
+    #: link built from `endpoint` therefore worked from inside the stack and
+    #: failed from the only place it is ever clicked. Left empty, `endpoint` is
+    #: used unchanged, which is correct when both sides share a hostname.
+    public_endpoint: str = ""
     access_key: str = "minioadmin"
     secret_key: str = "minioadmin"
     secure: bool = False
@@ -183,7 +189,10 @@ class ExtractionSettings(_Base):
     #: Explicit path to the Tesseract executable. Blank means "on PATH", which
     #: is the case in the container and on most Linux hosts.
     tesseract_cmd: str = ""
-    ocr_languages: str = "fra+eng"
+    #: Tesseract language packs, in priority order. Arabic is included
+    #: because Tunisian and Moroccan notices mix it with French; a missing
+    #: pack does not fail loudly, it silently transliterates the glyphs.
+    ocr_languages: str = "fra+eng+ara"
     #: Below this many characters, a PDF page is assumed to be a scan and is
     #: sent to OCR. Digital PDFs comfortably exceed it; scanned ones yield
     #: almost nothing from the text layer.
@@ -199,6 +208,13 @@ class ExtractionSettings(_Base):
     #: Attachments larger than this are skipped: a 25 MB scanned annex would
     #: occupy an OCR worker for minutes for very little scoring value.
     max_document_bytes: int = 25 * 1024 * 1024
+    #: Buyers routinely publish the whole dossier as one archive, so an
+    #: unopened ZIP can hide the CCTP itself. These bound the damage a hostile
+    #: or merely careless archive can do: a 40 KB file can expand to gigabytes,
+    #: and an archive containing itself would otherwise recurse forever.
+    archive_max_members: int = 60
+    archive_max_total_bytes: int = 200 * 1024 * 1024
+    archive_max_depth: int = 2
 
 
 class SemanticSettings(_Base):

@@ -21,6 +21,10 @@ x-app-env: &app-env
   SMARTTENDER_DB__NAME: smarttender
   SMARTTENDER_REDIS__HOST: redis
   SMARTTENDER_STORAGE__ENDPOINT: minio:9000
+  # Where a BROWSER can reach MinIO. Presigned links are built with this host;
+  # without it they carry the container name and fail in the only place they
+  # are ever clicked.
+  SMARTTENDER_STORAGE__PUBLIC_ENDPOINT: "${SMARTTENDER_STORAGE__PUBLIC_ENDPOINT:-localhost:9000}"
   SMARTTENDER_STORAGE__ACCESS_KEY: minioadmin
   SMARTTENDER_STORAGE__SECRET_KEY: minioadmin
   SMARTTENDER_STORAGE__SECURE: "false"
@@ -37,7 +41,7 @@ x-app-env: &app-env
   # Document extraction. Tesseract is installed in the image and on PATH.
   SMARTTENDER_EXTRACTION__ENABLED: "${SMARTTENDER_EXTRACTION__ENABLED:-true}"
   SMARTTENDER_EXTRACTION__OCR_ENABLED: "${SMARTTENDER_EXTRACTION__OCR_ENABLED:-true}"
-  SMARTTENDER_EXTRACTION__OCR_LANGUAGES: "${SMARTTENDER_EXTRACTION__OCR_LANGUAGES:-fra+eng}"
+  SMARTTENDER_EXTRACTION__OCR_LANGUAGES: "${SMARTTENDER_EXTRACTION__OCR_LANGUAGES:-fra+eng+ara}"
 
   # --- Connector credentials ------------------------------------------------
   # Interpolated from `.env`, which Compose reads automatically. Hardcoding

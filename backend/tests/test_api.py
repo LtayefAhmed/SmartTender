@@ -512,3 +512,69 @@ class TestBusinessDomains:
         """The picker's vocabulary and a stored score must be traceable to the
         same profile revision."""
         assert client.get("/admin/business-domains").json()["profile_version"]
+
+
+class TestAttachmentDownload:
+    """A stored attachment must be reachable from the interface.
+
+    Fifteen files were fetched for one tender, five were dropped by a cap, and
+    the ten that arrived could only be read by opening the object store by
+    hand. Collecting a cahier des charges nobody can open is close to not
+    collecting it.
+    """
+
+    def _tender_with_document(self, client, **doc):
+        from app.db.models.tender import Tender, TenderDocument
+        from app.db.session import session_scope
+
+        with session_scope() as session:
+            tender = Tender(
+                source_key="j360",
+                entry_point=EntryPoint.MANUAL_SCRAPE.value,
+                title="Renouvellement de la TMA",
+            )
+            session.add(tender)
+            session.flush()
+            document = TenderDocument(tender_id=tender.id, **doc)
+            session.add(document)
+            session.flush()
+            return str(tender.id), str(document.id)
+
+    def test_a_missing_attachment_is_a_404(self, client):
+        import uuid as uuid_module
+
+        response = client.get(
+            f"/tenders/{uuid_module.uuid4()}/documents/{uuid_module.uuid4()}/download"
+        )
+        assert response.status_code == 404
+
+
+class TestAttachmentPriority:
+    """When a cap binds, it must keep the documents a bid depends on.
+
+    Measured on a real consultation: a ceiling of ten dropped the règlement de
+    consultation, the CCTP and the software-stack annex — the three that matter
+    — while keeping ATTRI and DC1 forms a bidder merely fills in.
+    """
+
+    def test_substantive_documents_are_fetched_first(self):
+        from app.workers.tasks.pipeline import _by_importance
+
+        pending = [
+            ("1", "u", "CNSO_ATTRI1.doc"),
+            ("2", "u", "CNSO_RC_VF.pdf"),
+            ("3", "u", "CNSO_DC1.doc"),
+            ("4", "u", "CNSO_CCTP_VF.pdf"),
+            ("5", "u", "CNSO_PAS RGPD modele.docx"),
+        ]
+        ordered = [name for _, _, name in _by_importance(pending)]
+
+        assert ordered[0].startswith("CNSO_CCTP")
+        assert "CNSO_RC_VF.pdf" in ordered[:2]
+        assert ordered[-1].startswith("CNSO_PAS")
+
+    def test_the_cap_now_exceeds_a_real_consultation(self):
+        """Fifteen files is an ordinary French tender, not an outlier."""
+        from app.workers.tasks.pipeline import _by_importance
+
+        assert len(_by_importance([(str(i), "u", f"f{i}.pdf") for i in range(15)])) == 15

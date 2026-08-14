@@ -121,8 +121,11 @@ export interface RunExtra {
   stop_reason?: string | null;
   skip_reason?: string | null;
   filter_application?: {
+    /** Applied after normalisation, on our side. */
     client_side?: string[];
+    /** Delegated to the portal — a page of results is a page of matches. */
     server_side?: string[];
+    /** The portal has no concept for this at all; usually a typo. */
     unsupported?: string[];
   };
   [key: string]: unknown;
@@ -243,6 +246,27 @@ export interface DashboardStats {
   band_metadata: Record<string, { label: string; color: string; min_score: number }>;
 }
 
+/**
+ * What was *not* collected. Every other counter answers "what do we have";
+ * this one answers the question that matters for matching, because a tender
+ * whose CCTP never downloaded still appears and still scores.
+ */
+export interface CompletenessStats {
+  tenders_in_scope: number;
+  tenders_without_stored_document: number;
+  tenders_without_text: number;
+  /** Attachments were read — the only text that states required skills. */
+  tenders_with_dossier_text: number;
+  tenders_with_thin_text: number;
+  thin_text_threshold_chars: number;
+  tenders_with_truncated_text: number;
+  text_cap_chars: number;
+  documents_by_status: Record<string, number>;
+  document_failures: { reason: string; count: number }[];
+  extraction_by_status: Record<string, number>;
+  extraction_errors: { reason: string; count: number }[];
+}
+
 export interface Notification {
   id: string;
   tender_id: string | null;
@@ -306,4 +330,13 @@ export interface BusinessDomain {
   expertise: string[];
   /** A public buyer's vocabulary ("progiciel de gestion"). This is what portals receive. */
   search_terms: string[];
+}
+
+/** Vocabularies the sources define, served from their connector configuration. */
+export interface ReferenceData {
+  countries: { name: string; code: string }[];
+  /** A zone stands for all its countries — "Afrique" is 55 of them. */
+  zones: { name: string; count: number }[];
+  /** J360 calls these *activités*; matching its wording keeps the field recognisable. */
+  activities: { name: string; id: number }[];
 }

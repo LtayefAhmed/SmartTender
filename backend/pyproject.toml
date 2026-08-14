@@ -51,6 +51,15 @@ dependencies = [
     # All pure-Python, no system dependencies.
     "pypdf>=4.0",
     "python-docx>=1.1",
+    # Spreadsheets are not incidental in a procurement dossier: the BPU and the
+    # DQE carry the price structure, and annexes named "Exigences, pénalités,
+    # livrables et indicateurs" are the requirements matrix itself. The
+    # completeness report showed these silently unread on 4 consultations.
+    "openpyxl>=3.1",
+    # Buyers publish dossiers as .7z as readily as .zip. Without this, an
+    # archive is opened or ignored depending on which tool the buyer happened
+    # to use — an arbitrary reason to lose a cahier des charges.
+    "py7zr>=0.21",
 
     # --- OCR fallback for scanned documents -------------------------------
     # pypdfium2 rasterises without Poppler (works identically on Windows and

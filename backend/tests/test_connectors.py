@@ -818,3 +818,62 @@ class TestTunepsDeepLink:
         urls = {r.source_url for r in self._record(html)}
 
         assert len(urls) == 2
+
+
+class TestDelegatedCriteriaAreNotReChecked:
+    """A criterion the portal applied must not be re-applied locally.
+
+    Measured on live data: asking J360 for the zone "Afrique" sends 55 country
+    codes, the portal answers correctly, and the local check then compares each
+    tender's country against the literal string "Afrique" — discarding all 200.
+    The same shape appears with keywords, because the portal searches a notice's
+    full text while we hold only its title and highlight fragments.
+    """
+
+    class _Delegating(_Probe):
+        """A connector that claims the portal honoured the country filter."""
+
+        async def setup(self) -> None:
+            await super().setup()
+            self._filter_application.server_side = ["countries"]
+
+        def normalize(self, record):
+            tender = super().normalize(record)
+            tender.country = "Tunisie"
+            return tender
+
+    def test_a_delegated_criterion_does_not_discard_results(self):
+        probe = self._Delegating(_config())
+        probe.pages = [_page()]
+        probe.records_per_page = 3
+
+        # "Afrique" matches no tender's country literally, but the portal
+        # already resolved it to the right countries.
+        outcome = _run(probe, TenderFilters(countries=["Afrique"]))
+
+        assert outcome.items_found == 3
+        assert outcome.items_filtered_out == 0
+
+    def test_an_undelegated_criterion_is_still_applied(self):
+        """Skipping must be tied to delegation, not applied everywhere."""
+        probe = _Probe(_config())
+        probe.pages = [_page()]
+        probe.records_per_page = 3
+
+        outcome = _run(probe, TenderFilters(countries=["Japon"]))
+
+        assert outcome.items_found == 0
+        assert outcome.items_filtered_out == 3
+
+    def test_other_criteria_are_unaffected(self):
+        """Delegating countries must not disable the keyword filter."""
+        probe = self._Delegating(_config())
+        probe.pages = [_page()]
+        probe.records_per_page = 3
+
+        outcome = _run(
+            probe, TenderFilters(countries=["Afrique"], keywords=["carburant"])
+        )
+
+        assert outcome.items_found == 0
+        assert outcome.items_filtered_out == 3

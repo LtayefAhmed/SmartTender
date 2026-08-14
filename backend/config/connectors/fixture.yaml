@@ -34,7 +34,11 @@ pagination:
   stop_on_empty_page: true
 
 filter_mapping:
-  keywords: "q"
+  # Everything is null on purpose. Naming a parameter here is a PROMISE that
+  # the source applied it, and the pipeline then skips its own check to avoid
+  # discarding what the portal was right to return. This connector serves
+  # static files and filters nothing, so it must claim nothing.
+  keywords: null
   country: null
   organization: null
   procurement_type: null

@@ -151,6 +151,69 @@ async def get_tender(
 
 
 @router.get(
+    "/{tender_id}/documents/{document_id}/download",
+    summary="Get a time-limited download link for one attachment",
+)
+async def download_document(
+    tender_id: uuid_module.UUID,
+    document_id: uuid_module.UUID,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Return a presigned URL for a stored attachment.
+
+    Downloading the cahier des charges was previously impossible from the
+    interface: the files were fetched and stored, the screen showed them, and
+    the only way to read one was to open the object store by hand. Collecting a
+    document nobody can reach is close to not collecting it.
+    """
+    import anyio
+
+    from app.db.models.tender import TenderDocument
+
+    document = (
+        await session.execute(
+            select(TenderDocument).where(
+                TenderDocument.id == document_id,
+                TenderDocument.tender_id == tender_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
+    if document.status != "stored" or not document.storage_key:
+        # The row exists but the bytes never arrived. Saying which is what lets
+        # someone decide between retrying and opening the source portal.
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "This attachment was never stored.",
+                "status": document.status,
+                "reason": document.error_message,
+                "source_url": document.source_url,
+            },
+        )
+
+    from app.services.storage import get_storage
+
+    storage = get_storage()
+    url = await anyio.to_thread.run_sync(lambda: storage.presigned_url(document.storage_key))
+    logger.info(
+        "api.document_link_issued",
+        tender_uuid=str(tender_id),
+        document_uuid=str(document_id),
+        actor=principal.identity,
+    )
+    return {
+        "url": url,
+        "name": document.name,
+        "content_type": document.content_type,
+        "size_bytes": document.size_bytes,
+    }
+
+
+@router.get(
     "/{tender_id}/download",
     summary="Get a time-limited download link for the original document",
 )
@@ -222,6 +285,143 @@ async def tender_scores(
         )
         for row in rows
     ]
+
+
+#: Below this, a tender's stored text is an abstract rather than a
+#: specification. Chosen from measurement: J360's Tunisian notices land around
+#: 500 characters with no attachment, while one consultation with its CCTP
+#: reached 441 000. Anything under a few thousand characters cannot support
+#: matching a CV against required skills.
+_THIN_TEXT_CHARS = 3_000
+
+
+@router.get("/stats/completeness", summary="What is missing from the corpus")
+async def stats_completeness(
+    session: AsyncSession = Depends(get_session),
+    _: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Report what was *not* collected.
+
+    Every other counter in this API answers "what do we have". None of them
+    answers "what are we missing", and that is the question that matters when
+    the corpus feeds CV matching: a tender whose CCTP never downloaded still
+    appears, still scores, and silently contributes nothing to the match. The
+    losses this endpoint surfaces were all found by hand — a document cap that
+    dropped the règlement de consultation, archives stored but never opened,
+    links inside a publication that nothing followed. Each was invisible
+    because nothing failed.
+    """
+    from app.db.models.tender import TenderDocument
+
+    in_scope = Tender.relevance_band != RelevanceBand.OUT_OF_SCOPE.value
+
+    total = (await session.execute(select(func.count(Tender.id)).where(in_scope))).scalar_one()
+
+    document_status = dict(
+        (
+            await session.execute(
+                select(TenderDocument.status, func.count(TenderDocument.id)).group_by(
+                    TenderDocument.status
+                )
+            )
+        ).all()
+    )
+
+    # Grouped so a systematic cause — an expired signature, a portal requiring
+    # a login — is visible as one large number instead of many single failures.
+    failure_rows = (
+        await session.execute(
+            select(TenderDocument.error_message, func.count(TenderDocument.id))
+            .where(TenderDocument.status == "failed")
+            .group_by(TenderDocument.error_message)
+            .order_by(desc(func.count(TenderDocument.id)))
+            .limit(10)
+        )
+    ).all()
+
+    with_documents = (
+        await session.execute(
+            select(func.count(func.distinct(TenderDocument.tender_id))).where(
+                TenderDocument.status == "stored"
+            )
+        )
+    ).scalar_one()
+
+    # Matchable text is the publication *plus* the attachments, not the
+    # attachments alone. Counting only `extraction_chars` reported a Moroccan
+    # notice carrying an 8 262-character publication as having no text at all,
+    # and made whole countries look empty when they were merely dossier-less.
+    matchable = func.coalesce(func.length(Tender.description), 0) + Tender.extraction_chars
+
+    no_text = (
+        await session.execute(select(func.count(Tender.id)).where(in_scope, matchable == 0))
+    ).scalar_one()
+    thin_text = (
+        await session.execute(
+            select(func.count(Tender.id)).where(
+                in_scope, matchable > 0, matchable < _THIN_TEXT_CHARS
+            )
+        )
+    ).scalar_one()
+    # Reported separately because the two carry different value: a publication
+    # states the object and the criteria, a dossier states the requirements.
+    # Only the second can support matching a CV against required skills.
+    with_dossier = (
+        await session.execute(
+            select(func.count(Tender.id)).where(in_scope, Tender.extraction_chars > 0)
+        )
+    ).scalar_one()
+    # Truncation is the quietest loss of all: the tender looks complete, the
+    # character count looks impressive, and the tail of the dossier is simply
+    # gone. It is inferred rather than recorded — `clean_extracted_text` cuts
+    # at the cap and trims back to a word boundary, so a tender landing within
+    # a few characters of the ceiling was cut.
+    from app.core.config import get_settings
+
+    cap = get_settings().extraction.max_chars_per_tender
+    truncated = (
+        await session.execute(
+            select(func.count(Tender.id)).where(in_scope, Tender.extraction_chars >= cap - 200)
+        )
+    ).scalar_one()
+
+    extraction_status = dict(
+        (
+            await session.execute(
+                select(Tender.extraction_status, func.count(Tender.id))
+                .where(in_scope)
+                .group_by(Tender.extraction_status)
+            )
+        ).all()
+    )
+    extraction_errors = (
+        await session.execute(
+            select(Tender.extraction_error, func.count(Tender.id))
+            .where(in_scope, Tender.extraction_error.isnot(None))
+            .group_by(Tender.extraction_error)
+            .order_by(desc(func.count(Tender.id)))
+            .limit(10)
+        )
+    ).all()
+
+    return {
+        "tenders_in_scope": total,
+        "tenders_without_stored_document": total - with_documents,
+        "tenders_without_text": no_text,
+        "tenders_with_dossier_text": with_dossier,
+        "tenders_with_thin_text": thin_text,
+        "thin_text_threshold_chars": _THIN_TEXT_CHARS,
+        "tenders_with_truncated_text": truncated,
+        "text_cap_chars": cap,
+        "documents_by_status": document_status,
+        "document_failures": [
+            {"reason": reason or "unspecified", "count": count} for reason, count in failure_rows
+        ],
+        "extraction_by_status": extraction_status,
+        "extraction_errors": [
+            {"reason": reason, "count": count} for reason, count in extraction_errors
+        ],
+    }
 
 
 @router.get("/stats/overview", summary="Dashboard counters", include_in_schema=True)

@@ -13,10 +13,11 @@ queue rather than the whole pipeline.
 
 from __future__ import annotations
 
+import os
 import uuid as uuid_module
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from app.connectors.models import NormalizedTender
 from app.core.enums import (
@@ -203,6 +204,7 @@ def extract_tender_text(self: PipelineTask, tender_id: str) -> dict[str, Any]:
 def _run_extraction(session, tender, sources, storage, extractor) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """Extract every source document and merge the results onto the tender."""
     from app.core.config import get_settings
+    from app.services.extraction import DOCUMENT_MARKER as _DOCUMENT_MARKER
     from app.services.extraction import clean_extracted_text
 
     limit = get_settings().extraction.max_chars_per_tender
@@ -220,7 +222,13 @@ def _run_extraction(session, tender, sources, storage, extractor) -> dict[str, A
 
         result = extractor.extract(content, content_type=content_type, filename=name)
         if result.ok:
-            collected.append(result.text)
+            # Each document is announced by name in the merged text. Two reasons,
+            # both about what happens downstream: a 440 000-character tender is
+            # far too long to embed as one vector, so it must be chunked — and a
+            # chunk is only useful if you know whether it came from the CCTP or
+            # from an RGPD template nobody reads. The marker is the split point
+            # and the provenance at once.
+            collected.append(f"{_DOCUMENT_MARKER} {name or key}\n{result.text}")
             methods.add(result.method)
             pages_ocr += result.pages_ocr
         elif result.error:
@@ -523,6 +531,21 @@ def _continue_to_extraction(tender_id: str) -> None:
     extract_tender_text.apply_async(kwargs={"tender_id": tender_id}, queue="ocr")
 
 
+#: Filename fragments that mark the documents a bid actually depends on.
+#: French procurement names them consistently: RC (règlement de consultation),
+#: CCTP/CCAP (clauses techniques and administratives), CDC (cahier des charges),
+#: DCE (dossier de consultation).
+def _by_importance(pending: list[tuple[str, str, str | None]]) -> list[tuple[str, str, str | None]]:
+    """Order attachments so a binding cap keeps the ones that matter."""
+    from app.services.extraction import document_priority
+
+    def rank(entry: tuple[str, str, str | None]) -> tuple[int, str]:
+        name = (entry[2] or entry[1] or "").lower()
+        return (document_priority(name), name)
+
+    return sorted(pending, key=rank)
+
+
 async def _download_all(
     connector_key: str, tender_id: str, pending: list[tuple[str, str, str | None]]
 ) -> dict[str, dict[str, Any]]:
@@ -545,7 +568,13 @@ async def _download_all(
         base_url = ""
 
     max_bytes = int(policy.get("max_bytes_each") or 25 * 1024 * 1024)
-    max_documents = int(policy.get("max_per_tender") or 10)
+    # A ceiling of ten dropped the five most valuable pieces of a fifteen-file
+    # consultation — the règlement, the CCTP and the software-stack annex —
+    # purely by their position in the list. The cap exists to bound a runaway
+    # portal, not to sample a normal one, so it now sits well above what a real
+    # tender carries and the ordering below decides what survives if it binds.
+    max_documents = int(policy.get("max_per_tender") or 40)
+    pending = _by_importance(pending)
     storage = get_storage()
     results: dict[str, dict[str, Any]] = {}
 
@@ -636,11 +665,20 @@ def rescore_all(self: PipelineTask, limit: int = 5000, band: str | None = None) 
     return {"dispatched": len(tender_ids)}
 
 
-#: A notice is only worth opening if the listing already suggests it might be
-#: ours. Set at the "relevant" band's floor so the pass follows the same
-#: judgement the dashboard shows, rather than inventing a second threshold that
-#: would drift away from it.
-ENRICHMENT_MIN_SCORE = 0.45
+#: The floor below which a notice is not worth opening.
+#:
+#: This was set at the "relevant" band's floor, which looked principled and was
+#: in fact circular. The score is computed from the listing summary — 460
+#: characters for a Tunisian notice — while the publication that enrichment
+#: fetches averages **19 783**. A notice was therefore judged on the thin text,
+#: and the thinness of that text is what denied it the rich one. Three of 154
+#: Tunisian notices ever got past it.
+#:
+#: The floor is kept, because an unbounded pass would put real volume through a
+#: session that identifies us on every request. But it now sits low enough that
+#: the search filters — which the user chose deliberately — do the selecting,
+#: and the score only orders the queue.
+ENRICHMENT_MIN_SCORE = float(os.getenv("SMARTTENDER_ENRICHMENT_MIN_SCORE", "0.20"))
 
 
 def _should_enrich(tender_id: str, score: float) -> bool:
@@ -788,6 +826,106 @@ def enrich_tender(self: PipelineTask, tender_id: str) -> dict[str, Any]:
             extract_tender_text.apply_async(kwargs={"tender_id": tender_id}, queue="ocr")
 
         return {"tender_id": tender_id, "applied": applied, "documents": new_documents}
+
+
+@celery_app.task(
+    base=PipelineTask,
+    bind=True,
+    name="app.workers.tasks.pipeline.enrich_backlog",
+    queue="scraping",
+    max_retries=0,
+)
+def enrich_backlog(
+    self: PipelineTask,
+    *,
+    country: str | None = None,
+    source_key: str | None = None,
+    limit: int = 25,
+    delay_seconds: float = 6.0,
+) -> dict[str, Any]:
+    """Open the notices that were never enriched, one at a time and slowly.
+
+    Most of the corpus was ingested while the enrichment floor was circular:
+    a notice was judged on its 460-character summary, and that judgement is
+    what denied it the 19 783-character publication. Lowering the floor fixes
+    new arrivals; it does nothing for what is already stored. Hence this pass.
+
+    Deliberately serial and paced. The session identifies us on every request,
+    and volume is what gets noticed — so this dispatches nothing in parallel,
+    sleeps between notices, and stops at the first sign the portal is refusing
+    us rather than retrying into a lockout.
+    """
+    import time
+
+    from app.connectors.registry import connector_class
+
+    with session_scope() as session:
+        query = (
+            select(Tender.id, Tender.source_key)
+            .where(
+                Tender.external_id.is_not(None),
+                # `extra ? 'enriched_at'` — never opened before.
+                ~Tender.extra.has_key("enriched_at"),
+            )
+            # Highest score first: if the budget runs out, it runs out on the
+            # least promising notices rather than on an arbitrary slice.
+            .order_by(desc(Tender.relevance_score).nulls_last())
+            .limit(limit)
+        )
+        if country:
+            query = query.where(Tender.country == country)
+        if source_key:
+            query = query.where(Tender.source_key == source_key)
+        candidates = [(str(row[0]), row[1]) for row in session.execute(query).all()]
+
+    supported: dict[str, bool] = {}
+    processed = 0
+    enriched = 0
+    stopped: str | None = None
+
+    for index, (tender_id, key) in enumerate(candidates):
+        if key not in supported:
+            try:
+                supported[key] = bool(getattr(connector_class(key), "supports_detail", False))
+            except Exception:
+                supported[key] = False
+        if not supported[key]:
+            continue
+
+        if index:
+            time.sleep(delay_seconds)
+
+        try:
+            outcome = enrich_tender.apply(kwargs={"tender_id": tender_id}).get()
+        except Exception as exc:
+            # An authentication bounce means the credential is spent or the
+            # portal has had enough. Continuing would turn one refusal into a
+            # pattern, which is the thing worth avoiding.
+            message = f"{type(exc).__name__}: {exc}"[:200]
+            if any(marker in message for marker in ("401", "403", "Authentication", "Credentials")):
+                stopped = message
+                break
+            logger.warning("enrichment.backlog_item_failed", tender_uuid=tender_id, error=message)
+            processed += 1
+            continue
+
+        processed += 1
+        if outcome.get("applied"):
+            enriched += 1
+
+    logger.info(
+        "enrichment.backlog_completed",
+        candidates=len(candidates),
+        processed=processed,
+        enriched=enriched,
+        stopped=stopped,
+    )
+    return {
+        "candidates": len(candidates),
+        "processed": processed,
+        "enriched": enriched,
+        "stopped": stopped,
+    }
 
 
 async def _fetch_detail(connector_key: str, request: dict[str, Any]) -> Any:

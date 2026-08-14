@@ -179,33 +179,277 @@ filter_mapping:
   status: null
 
 filter_values:
-  # Our filters speak country *names*; J360 speaks ISO-3166 alpha-2.
+  # ── Référentiels lus depuis J360 elle-même ────────────────────────────────
+  # GET /api/countries et GET /api/trades. Figés ici plutôt que relus à chaque
+  # exécution : ces listes bougent une fois par an, et une table versionnée se
+  # relit et se corrige, là où un appel réseau au démarrage ajoute une panne
+  # possible.
+  #
+  # Mesuré avant d'avoir cette table : une recherche sur un pays absent de la
+  # liste (9 entrées écrites à la main) retombait en filtrage local et lisait
+  # 200 annonces pour n'en retenir aucune. 227 pays couvrent le catalogue.
   countries:
-    "Tunisie": "TN"
-    "Tunisia": "TN"
-    "Mauritanie": "MR"
-    "Maroc": "MA"
+    "Afghanistan": "AF"
+    "Afrique Du Sud": "ZA"
+    "Albanie": "AL"
     "Algérie": "DZ"
-    "France": "FR"
-    "Sénégal": "SN"
-    "Côte d'Ivoire": "CI"
+    "Allemagne": "DE"
+    "Andorre": "AD"
+    "Angola": "AO"
+    "Anguilla": "AI"
+    "Antigua Et Barbuda": "AG"
+    "Antilles Néerlandaises": "AN"
+    "Arabie Saoudite": "SA"
+    "Argentine": "AR"
+    "Arménie": "AM"
+    "Aruba": "AW"
+    "Australie": "AU"
+    "Autriche": "AT"
+    "Azerbaïdjan": "AZ"
+    "Bahamas": "BS"
+    "Bahreïn": "BH"
+    "Bangladesh": "BD"
+    "Barbade": "BB"
     "Belgique": "BE"
-  # J360 "trades" are numeric activity ids. These five are the account's own
-  # IT selection, read off the search form: Conseil ressources humaines,
-  # Consulting IT, Développement informatique, Elearning, and Logiciels de
-  # gestion et bureautique. Names are ours; only the ids matter to the API.
+    "Belize": "BZ"
+    "Bermudes": "BM"
+    "Bhoutan": "BT"
+    "Bolivie": "BO"
+    "Bosnie-Herzégovine": "BA"
+    "Botswana": "BW"
+    "Brunéi Darussalam": "BN"
+    "Brésil": "BR"
+    "Bulgarie": "BG"
+    "Burkina Faso": "BF"
+    "Burundi": "BI"
+    "Bélarus": "BY"
+    "Bénin": "BJ"
+    "Cambodge": "KH"
+    "Cameroun": "CM"
+    "Canada": "CA"
+    "Cap-Vert": "CV"
+    "Chili": "CL"
+    "Chine": "CN"
+    "Chypre": "CY"
+    "Colombie": "CO"
+    "Comores": "KM"
+    "Congo": "CG"
+    "Corée du Nord": "KP"
+    "Corée du Sud": "KR"
+    "Costa Rica": "CR"
+    "Croatie": "HR"
+    "Cuba": "CU"
+    "Côte d'Ivoire": "CI"
+    "Danemark": "DK"
+    "Djibouti": "DJ"
+    "Dominique": "DM"
+    "El Salvador": "SV"
+    "Espagne": "ES"
+    "Estonie": "EE"
+    "Eswatini": "SZ"
+    "Fidji": "FJ"
+    "Finlande": "FI"
+    "France": "FR"
+    "Gabon": "GA"
+    "Gambie": "GM"
+    "Ghana": "GH"
+    "Gibraltar": "GI"
+    "Grenade": "GD"
+    "Groenland": "GL"
+    "Grèce": "GR"
+    "Guam": "GU"
+    "Guatemala": "GT"
+    "Guernesey": "GG"
+    "Guinée": "GN"
+    "Guinée Équatoriale": "GQ"
+    "Guinée-Bissau": "GW"
+    "Guyana": "GY"
+    "Géorgie": "GE"
+    "Haïti": "HT"
+    "Honduras": "HN"
+    "Hong-Kong": "HK"
+    "Hongrie": "HU"
+    "Inde": "IN"
+    "Indonésie": "ID"
+    "Iran": "IR"
+    "Iraq": "IQ"
+    "Irlande": "IE"
+    "Islande": "IS"
+    "Israël": "IL"
+    "Italie": "IT"
+    "Jamaïque": "JM"
+    "Japon": "JP"
+    "Jersey": "JE"
+    "Jordanie": "JO"
+    "Kazakhstan": "KZ"
+    "Kenya": "KE"
+    "Kirghizistan": "KG"
+    "Kiribati": "KI"
+    "Kosovo": "KO"
+    "Koweït": "KW"
+    "Lesotho": "LS"
+    "Lettonie": "LV"
+    "Liban": "LB"
+    "Libye": "LY"
+    "Libéria": "LR"
+    "Liechtenstein": "LI"
+    "Lituanie": "LT"
+    "Luxembourg": "LU"
+    "Macao": "MO"
+    "Macédoine du Nord": "MK"
+    "Madagascar": "MG"
+    "Malaisie": "MY"
+    "Malawi": "MW"
+    "Maldives": "MV"
+    "Mali": "ML"
+    "Malte": "MT"
+    "Maroc": "MA"
+    "Maurice": "MU"
+    "Mauritanie": "MR"
+    "Mexique": "MX"
+    "Moldova": "MD"
+    "Monaco": "MC"
+    "Mongolie": "MN"
+    "Montserrat": "MS"
+    "Monténégro": "ME"
+    "Mozambique": "MZ"
+    "Myanmar": "MM"
+    "Namibie": "NA"
+    "Nauru": "NR"
+    "Nicaragua": "NI"
+    "Niger": "NE"
+    "Nigéria": "NG"
+    "Niué": "NU"
+    "Norvège": "NO"
+    "Nouvelle-Zélande": "NZ"
+    "Népal": "NP"
+    "Oman": "OM"
+    "Ouganda": "UG"
+    "Ouzbékistan": "UZ"
+    "Pakistan": "PK"
+    "Palaos": "PW"
+    "Palestine": "PS"
+    "Panama": "PA"
+    "Papouasie-Nouvelle-Guinée": "PG"
+    "Paraguay": "PY"
+    "Pays-Bas": "NL"
+    "Philippines": "PH"
+    "Pitcairn": "PN"
+    "Pologne": "PL"
+    "Porto Rico": "PR"
+    "Portugal": "PT"
+    "Pérou": "PE"
+    "Qatar": "QA"
+    "Roumanie": "RO"
+    "Royaume-Uni": "UK"
+    "Russie": "RU"
+    "Rwanda": "RW"
+    "République Centrafricaine": "CF"
+    "République Dominicaine": "DO"
+    "République Démocratique Populaire Lao": "LA"
+    "République Tchèque": "CZ"
+    "République démocratique du Congo": "CD"
+    "Sahara Occidental": "EH"
+    "Saint-Kitts-Et-Nevis": "KN"
+    "Saint-Marin": "SM"
+    "Saint-Vincent-Et-Les Grenadines": "VC"
+    "Sainte-Lucie": "LC"
+    "Samoa": "WS"
+    "Samoa Américaines": "AS"
+    "Sao Tomé-Et-Principe": "ST"
+    "Serbie": "RS"
+    "Seychelles": "SC"
+    "Sierra Leone": "SL"
+    "Singapour": "SG"
+    "Slovaquie": "SK"
+    "Slovénie": "SI"
+    "Somalie": "SO"
+    "Soudan": "SD"
+    "Sri Lanka": "LK"
+    "Sud Soudan": "SS"
+    "Suisse": "CH"
+    "Suriname": "SR"
+    "Suède": "SE"
+    "Syrie": "SY"
+    "Sénégal": "SN"
+    "Tadjikistan": "TJ"
+    "Tanzanie": "TZ"
+    "Taïwan": "TW"
+    "Tchad": "TD"
+    "Thaïlande": "TH"
+    "Timor-Leste": "TL"
+    "Togo": "TG"
+    "Tonga": "TO"
+    "Trinité-Et-Tobago": "TT"
+    "Tunisie": "TN"
+    "Turkménistan": "TM"
+    "Turquie": "TR"
+    "Tuvalu": "TV"
+    "Ukraine": "UA"
+    "Uruguay": "UY"
+    "Vanuatu": "VU"
+    "Vatican": "VA"
+    "Venezuela": "VE"
+    "Viet Nam": "VN"
+    "Yémen": "YE"
+    "Zambie": "ZM"
+    "Zimbabwe": "ZW"
+    "Égypte": "EG"
+    "Émirats Arabes Unis": "AE"
+    "Équateur": "EC"
+    "Érythrée": "ER"
+    "États Fédérés de Micronésie": "FM"
+    "États-Unis": "US"
+    "Éthiopie": "ET"
+    "Île Christmas": "CX"
+    "Île De Man": "IM"
+    "Île Norfolk": "NF"
+    "Îles Aland": "AX"
+    "Îles Caïmanes": "KY"
+    "Îles Cocos (Keeling)": "CC"
+    "Îles Cook": "CK"
+    "Îles Féroé": "FO"
+    "Îles Heard-et-MacDonald": "HM"
+    "Îles Mariannes Du Nord": "MP"
+    "Îles Marshall": "MH"
+    "Îles Salomon": "SB"
+    "Îles Turques-et-Caïques": "TC"
+    "Îles Vierges Britanniques": "VG"
+    "Îles Vierges Des États-Unis": "VI"
+
+  # Zones géographiques de J360 : « Afrique » vaut 55 pays. Permet de viser un
+  # continent sans énumérer ses États.
+  country_zones:
+    "Afrique": ["AO", "BF", "BI", "BJ", "BW", "CD", "CF", "CG", "CI", "CM", "CV", "DJ", "DZ", "EG", "EH", "ER", "ET", "GA", "GH", "GM", "GN", "GQ", "GW", "KE", "KM", "LR", "LS", "LY", "MA", "MG", "ML", "MR", "MU", "MW", "MZ", "NA", "NE", "NG", "RW", "SC", "SD", "SL", "SN", "SO", "SS", "ST", "SZ", "TD", "TG", "TN", "TZ", "UG", "ZA", "ZM", "ZW"]
+    "Amérique Centrale - Caraïbes": ["AG", "AI", "AN", "AW", "BB", "BM", "BS", "BZ", "CR", "CU", "DM", "DO", "GD", "GT", "HN", "HT", "JM", "KN", "KY", "LC", "MS", "MX", "NI", "PA", "PR", "SV", "TC", "TT", "VC", "VG", "VI"]
+    "Amérique du Nord": ["CA", "US"]
+    "Amérique du Sud": ["AR", "BO", "BR", "CL", "CO", "EC", "GY", "PE", "PY", "SR", "UY", "VE"]
+    "Asie Centrale - Russie": ["AM", "AZ", "GE", "KG", "KZ", "MN", "RU", "TJ", "TM", "UZ"]
+    "Asie du Sud": ["AF", "BD", "BT", "IN", "LK", "MM", "MV", "NP", "PK"]
+    "Asie orientale - ASEAN": ["BN", "CN", "HK", "ID", "JP", "KH", "KP", "KR", "LA", "MO", "MY", "PH", "SG", "TH", "TL", "TW", "VN"]
+    "Europe": ["AD", "AL", "AT", "AX", "BA", "BE", "BG", "BY", "CH", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FO", "FR", "GG", "GI", "GL", "GR", "HR", "HU", "IE", "IM", "IS", "IT", "JE", "KO", "LI", "LT", "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS", "SE", "SI", "SK", "SM", "UA", "UK", "VA"]
+    "Moyen-Orient": ["AE", "BH", "IL", "IQ", "IR", "JO", "KW", "LB", "OM", "PS", "QA", "SA", "SY", "TR", "YE"]
+    "Océanie": ["AS", "AU", "CC", "CK", "CX", "FJ", "FM", "GU", "HM", "KI", "MH", "MP", "NF", "NR", "NU", "NZ", "PG", "PN", "PW", "SB", "TO", "TV", "VU", "WS"]
+
+  # Activités J360 retenues pour Inetum. La liste complète en compte 120 ;
+  # celles-ci sont les seules que l'entreprise vend.
   sectors:
-    "Conseil RH": 60
+    "Administration des systèmes informatiques": 131
+    "Communication digitale": 40
+    "Conseil ressources humaines": 60
     "Consulting IT": 133
     "Développement informatique": 132
     "Elearning": 29
-    "Logiciels de gestion": 105
-  # J360's announce_type codes, mapped to the platform vocabulary.
+    "Logiciels de gestion et bureautique": 105
+    "Sécurité informatique": 113
+    "Télécom,  réseaux VDI": 135
+    "Équipements électroniques et informatiques": 134
+
+  # Codes announce_type de J360, projetés sur le vocabulaire de la plateforme.
   procurement_type:
     open: "MC"                      # Marché en cours
     prior_information_notice: "AP"  # Appel à projets
     awarded: "RM"                   # Résultat de marché
-
 response_mapping:
   items_path: "results"
   total_path: "count"
