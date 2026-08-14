@@ -22,6 +22,10 @@ const NAV = [
     ],
   },
   {
+    section: "Matching",
+    items: [{ to: "/matching/cv-import", icon: "⧫", label: "Import CVs" }],
+  },
+  {
     section: "Suivi",
     items: [
       { to: "/notifications", icon: "◉", label: "Notifications", badge: true },

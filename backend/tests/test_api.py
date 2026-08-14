@@ -266,6 +266,86 @@ class TestUploadEndpoint:
         assert response.json()["code"] == "unsupported_media_type"
 
 
+class TestCvEndpoints:
+    """Import only — no parsing, no matching. That is a later phase."""
+
+    def _fake_storage(self, monkeypatch):
+        import app.api.routers.cvs as cvs_module
+        from app.services.storage import StoredObject
+
+        class _FakeStorage:
+            def build_key(self, cv_id, filename, **kwargs):
+                return f"cvs/{cv_id}/{filename}"
+
+            def put_bytes(self, key, data, **kwargs):
+                return StoredObject(
+                    bucket="test-bucket",
+                    key=key,
+                    size_bytes=len(data),
+                    content_type=kwargs.get("content_type", "application/octet-stream"),
+                )
+
+            def delete(self, key):
+                pass
+
+        monkeypatch.setattr(
+            "app.services.storage.get_storage", lambda: _FakeStorage(), raising=False
+        )
+        return cvs_module
+
+    def test_a_valid_cv_is_imported(self, client, minimal_pdf, monkeypatch):
+        self._fake_storage(monkeypatch)
+
+        response = client.post(
+            "/cvs",
+            files={"file": ("cv_amine.pdf", minimal_pdf, "application/pdf")},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["original_filename"] == "cv_amine.pdf"
+        assert body["source"] == "upload"
+        assert body["uploaded_by"] == "amine"
+
+    def test_an_imported_cv_is_listed(self, client, minimal_pdf, monkeypatch):
+        self._fake_storage(monkeypatch)
+        client.post("/cvs", files={"file": ("cv.pdf", minimal_pdf, "application/pdf")})
+
+        body = client.get("/cvs").json()
+        assert body["total"] == 1
+        assert body["items"][0]["original_filename"] == "cv.pdf"
+
+    def test_a_link_import_records_its_source_url(self, client, minimal_pdf, monkeypatch):
+        self._fake_storage(monkeypatch)
+
+        response = client.post(
+            "/cvs",
+            files={"file": ("cv_from_link.pdf", minimal_pdf, "application/pdf")},
+            data={"source": "link", "source_url": "https://example.com/cv.pdf"},
+        )
+        body = response.json()
+        assert body["source"] == "link"
+        assert body["source_url"] == "https://example.com/cv.pdf"
+
+    def test_an_unsupported_extension_is_refused(self, client):
+        response = client.post(
+            "/cvs",
+            files={"file": ("cv.exe", b"MZ\x90\x00" + b"\x00" * 300, "application/octet-stream")},
+        )
+        assert response.status_code in (415, 422)
+
+    def test_deleting_an_unknown_cv_is_404(self, client):
+        assert client.delete(f"/cvs/{uuid_module.uuid4()}").status_code == 404
+
+    def test_a_cv_can_be_deleted(self, client, minimal_pdf, monkeypatch):
+        self._fake_storage(monkeypatch)
+        cv_id = client.post(
+            "/cvs", files={"file": ("cv.pdf", minimal_pdf, "application/pdf")}
+        ).json()["id"]
+
+        assert client.delete(f"/cvs/{cv_id}").status_code == 204
+        assert client.get("/cvs").json()["total"] == 0
+
+
 class TestTenderEndpoints:
     def test_listing_is_paginated(self, client, seeded):
         body = client.get("/tenders", params={"page": 1, "page_size": 1}).json()
@@ -305,6 +385,12 @@ class TestTenderEndpoints:
     def test_download_without_a_stored_document_is_404(self, client, seeded):
         tender_id = client.get("/tenders").json()["items"][0]["id"]
         assert client.get(f"/tenders/{tender_id}/download").status_code == 404
+
+    def test_attachment_download_of_an_unknown_document_is_404(self, client, seeded):
+        tender_id = client.get("/tenders").json()["items"][0]["id"]
+        unknown_document_id = uuid_module.uuid4()
+        response = client.get(f"/tenders/{tender_id}/documents/{unknown_document_id}/download")
+        assert response.status_code == 404
 
     def test_dashboard_counters(self, client, seeded):
         body = client.get("/tenders/stats/overview").json()

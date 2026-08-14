@@ -553,6 +553,109 @@ class TestAttachments:
         result = connector._detail_from_body({"id": 1, "attached_files": []})
         assert result.documents == []
 
+    def test_a_publication_page_attachment_is_found(self, connector):
+        """`attached_files` is J360's own metadata and is usually empty — the
+
+        real files are linked from the *originating* portal's page, which is
+        what the signed publication URL proxies. Captured live off a Moroccan
+        notice syndicated from tanmia.ma (WordPress + the `wp-attachments`
+        plugin). J360 also embeds its own cached copy of the same file as a
+        plain `<embed>` alongside it — measured identical in text content to
+        the named attachment, just re-encoded — so it must not surface as a
+        second, anonymous document once the named one is already found.
+        """
+        from bs4 import BeautifulSoup
+
+        html = """
+        <div style="width:100%;margin:10px 0 10px 0;">
+            <h3>T&#233;l&#233;charger les fichiers</h3>
+            <ul class="post-attachments">
+              <li class="post-attachment mime-application-pdf">
+                <a rel="noopener noreferrer"
+                   href="https://tanmia.ma/wp-content/uploads/2026/07/TDR-Achat-ERP-RH-AMMPS-VF.pdf">
+                   TDR Achat ERP RH AMMPS-VF</a> <small>(350 kB)</small>
+              </li>
+            </ul>
+        </div>
+        <embed src="https://s3.eu-west-par.io.cloud.ovh.net/j360-private/announces/1773/media/87779.pdf?Signature=x"
+               width="100%" height="500">
+        """
+        soup = BeautifulSoup(html, "lxml")
+        documents = J360Connector._publication_documents(soup)
+
+        assert len(documents) == 1
+        assert "tanmia.ma" in documents[0].url
+        assert documents[0].name == "TDR Achat ERP RH AMMPS-VF"
+
+    def test_the_embed_is_used_only_when_no_named_attachment_exists(self, connector):
+        """The embed is a fallback, not a second document — see the note
+
+        above. When the originating page has no `wp-attachments` block at
+        all (a non-WordPress portal, or a notice with nothing indexed),
+        J360's own cached copy is the only way to reach the file at all.
+        """
+        from bs4 import BeautifulSoup
+
+        html = """
+        <embed src="https://s3.eu-west-par.io.cloud.ovh.net/j360-private/announces/1773/media/87779.pdf?Signature=x"
+               width="100%" height="500">
+        """
+        soup = BeautifulSoup(html, "lxml")
+        documents = J360Connector._publication_documents(soup)
+
+        assert len(documents) == 1
+        assert "j360-private" in documents[0].url
+        assert documents[0].name is None
+
+    def test_a_publication_page_without_attachments_yields_none(self, connector):
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup("<html><body><p>Rien ici.</p></body></html>", "lxml")
+        assert J360Connector._publication_documents(soup) == []
+
+    def test_a_file_linked_in_the_prose_is_still_found(self):
+        """Not every portal is WordPress.
+
+        `.post-attachment` is precise and finds the file with a real name, but
+        only on portals that use that structure. Plenty link their dossier in
+        the middle of a sentence instead, with an opaque href and the label
+        carrying the meaning. Neither signal subsumes the other, so both run:
+        structure first for the name, then a generic pass for whatever it
+        missed.
+        """
+        from bs4 import BeautifulSoup
+
+        html = """
+        <p>Le <a href="/telecharger/8821">Règlement de consultation - 1,1 Mo</a>
+        est disponible.</p>
+        <a href="/connexion">Se connecter</a>
+        <a href="/mentions-legales">Mentions légales</a>
+        """
+        documents = J360Connector._publication_documents(
+            BeautifulSoup(html, "lxml"), html, "https://j360-ext.info/pub/1"
+        )
+
+        assert [doc.url for doc in documents] == ["https://j360-ext.info/telecharger/8821"]
+        assert documents[0].name == "Règlement de consultation - 1,1 Mo"
+
+    def test_a_named_attachment_is_not_duplicated_by_the_generic_pass(self):
+        """Both passes see the same anchor; the structural name must win."""
+        from bs4 import BeautifulSoup
+
+        html = """
+        <ul class="post-attachments">
+          <li class="post-attachment">
+            <a href="https://portail.ma/files/CCTP.pdf">CCTP Achat ERP RH</a>
+          </li>
+        </ul>
+        """
+        documents = J360Connector._publication_documents(
+            BeautifulSoup(html, "lxml"), html, "https://j360-ext.info/pub/1"
+        )
+
+        assert len(documents) == 1
+        assert documents[0].name == "CCTP Achat ERP RH"
+
     def test_the_contract_total_is_preferred_over_a_lot_figure(self, connector):
         """A per-lot amount would understate the opportunity."""
         result = connector._detail_from_body(
@@ -599,7 +702,10 @@ class TestThePublicationIsTheRichestSource:
         originating portals, which need their own credentials."""
         import asyncio
 
-        assert asyncio.run(connector._fetch_publication("https://www.un.org/notice")) == (None, [])
+        assert asyncio.run(connector._fetch_publication("https://www.un.org/notice")) == (
+            None,
+            [],
+        )
         assert asyncio.run(connector._fetch_publication(None)) == (None, [])
 
 

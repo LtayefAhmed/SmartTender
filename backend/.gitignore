@@ -21,8 +21,15 @@ coverage.xml
 .env.local
 .env.*.local
 
-# Downloaded ONNX model files.
-models/
+# Downloaded ONNX model weights — `SemanticSettings.model_path` defaults to
+# ./models/all-MiniLM-L6-v2, relative to this directory.
+#
+# The leading slash is load-bearing. Written as `models/`, the pattern matches
+# a directory of that name at *any* depth, and it silently swallowed
+# `app/db/models/` — every ORM model in the project. Nothing failed: `git add`
+# skipped them, `git status` never listed them, and the repository has never
+# contained a table definition. A fresh clone could not start the application.
+/models/
 
 data/
 logs/

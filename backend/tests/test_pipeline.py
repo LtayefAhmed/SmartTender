@@ -612,3 +612,41 @@ class TestEnrichmentIsAdditive:
 
         assert added == 1
         assert again == 0
+
+    def test_a_re_signed_presigned_url_is_not_a_new_document(self, db_session):
+        """A presigned URL's signature and expiry change on every fetch even
+
+        when the underlying object does not. Comparing full URLs would then
+        record the same S3/MinIO-hosted attachment again on every
+        re-enrichment — measured live against J360's own cached copies,
+        served from a presigned OVH S3 URL that differs only in
+        ``Signature=`` and ``Expires=`` between two fetches minutes apart.
+        """
+        from app.connectors.models import DocumentRef
+        from app.workers.tasks.pipeline import _apply_detail
+
+        tender = self._tender(db_session)
+        base = "https://s3.example.com/j360-private/announces/1773/media/87779.pdf"
+
+        _, added = _apply_detail(
+            db_session,
+            tender,
+            self._detail(
+                documents=[
+                    DocumentRef(url=f"{base}?Signature=aaa%3D&Expires=1785941348")
+                ]
+            ),
+        )
+        db_session.flush()
+        _, added_again = _apply_detail(
+            db_session,
+            tender,
+            self._detail(
+                documents=[
+                    DocumentRef(url=f"{base}?Signature=bbb%3D&Expires=1785941905")
+                ]
+            ),
+        )
+
+        assert added == 1
+        assert added_again == 0

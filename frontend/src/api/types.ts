@@ -224,6 +224,19 @@ export interface Schedule {
   cadence: string;
 }
 
+/** A candidate CV, imported and stored — matching against tenders is a later
+ *  phase, not implemented yet. */
+export interface Cv {
+  id: string;
+  original_filename: string;
+  content_type: string;
+  size_bytes: number;
+  source: "upload" | "link";
+  source_url: string | null;
+  uploaded_by: string | null;
+  created_at: string;
+}
+
 export interface AcceptedResponse {
   accepted: boolean;
   message: string;

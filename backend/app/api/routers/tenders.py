@@ -14,7 +14,7 @@ from app.api.deps import Principal, get_session, pagination, require_principal
 from app.core.enums import RelevanceBand, TenderStatus
 from app.core.identity import utc_now
 from app.core.logging import get_logger
-from app.db.models.tender import Tender, TenderScore
+from app.db.models.tender import Tender, TenderDocument, TenderScore
 from app.schemas.common import Page, PaginationParams
 from app.schemas.tender import ScoreBreakdown, TenderDetail, TenderSummary
 
@@ -248,6 +248,59 @@ async def download_tender(
         "url": url,
         "expires_in_seconds": storage.presigned_ttl,
         "filename": row.original_filename,
+        "content_type": row.content_type,
+    }
+
+
+@router.get(
+    "/{tender_id}/documents/{document_id}/download",
+    summary="Get a time-limited download link for one attachment",
+)
+async def download_tender_document(
+    tender_id: uuid_module.UUID,
+    document_id: uuid_module.UUID,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Return a presigned URL for one of the tender's attachments.
+
+    Same rule as ``/{tender_id}/download``: the API never proxies file bytes.
+    A ``404`` here distinguishes two cases that look identical from a client's
+    point of view but mean different things to an operator — the attachment
+    row does not exist versus it exists but has not been fetched yet (still
+    ``pending`` or the download failed).
+    """
+    import anyio
+
+    row = (
+        await session.execute(
+            select(TenderDocument).where(
+                TenderDocument.id == document_id, TenderDocument.tender_id == tender_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    if not row.storage_key:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="This document has not been downloaded yet.",
+        )
+
+    from app.services.storage import get_storage
+
+    storage = get_storage()
+    url = await anyio.to_thread.run_sync(lambda: storage.presigned_url(row.storage_key))
+    logger.info(
+        "api.document_download_link_issued",
+        tender_uuid=str(tender_id),
+        document_id=str(document_id),
+        actor=principal.identity,
+    )
+    return {
+        "url": url,
+        "expires_in_seconds": storage.presigned_ttl,
+        "filename": row.name,
         "content_type": row.content_type,
     }
 
