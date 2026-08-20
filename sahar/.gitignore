@@ -1,0 +1,16 @@
+# Generated Qdrant index (rebuild locally with build_index.py) -- 100MB+,
+# derived data, never source-controlled.
+qdrant_db/
+
+# Source dataset -- 56MB, third-party (Kaggle "Resume Dataset"). Download it
+# yourself and place it here; see README for the link.
+Resume.csv
+
+# Generated per-run output, not source.
+dashboard.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

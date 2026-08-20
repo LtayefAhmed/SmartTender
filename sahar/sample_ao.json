@@ -1,0 +1,9 @@
+{
+  "title": "Senior Backend Developer",
+  "client": "Acme Corp",
+  "description": "We are looking for an experienced backend engineer to design and maintain cloud infrastructure and REST APIs.",
+  "required_skills": ["Python", "AWS", "Docker", "Kubernetes", "PostgreSQL"],
+  "nice_to_have": ["Terraform", "CI/CD"],
+  "duration_months": 6,
+  "location": "Remote"
+}
