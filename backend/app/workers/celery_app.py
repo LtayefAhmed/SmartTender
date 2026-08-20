@@ -126,6 +126,9 @@ def create_celery_app() -> Celery:
         include=[
             "app.workers.tasks.scraping",
             "app.workers.tasks.pipeline",
+            "app.workers.tasks.cvs",
+            "app.workers.tasks.indexing",
+            "app.workers.tasks.matching",
             "app.workers.tasks.notifications",
             "app.workers.tasks.maintenance",
         ],

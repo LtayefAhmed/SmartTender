@@ -326,6 +326,90 @@ class TestCvEndpoints:
         assert body["source"] == "link"
         assert body["source_url"] == "https://example.com/cv.pdf"
 
+    def test_the_same_file_twice_is_one_cv(self, client, minimal_pdf, monkeypatch):
+        """A firm re-importing its folder next month must not double everyone.
+
+        Without this, a shortlist shows the same person on two lines, and the
+        second row is indistinguishable from a genuine second candidate.
+        """
+        self._fake_storage(monkeypatch)
+        first = client.post("/cvs", files={"file": ("cv.pdf", minimal_pdf, "application/pdf")})
+        second = client.post(
+            "/cvs", files={"file": ("copie_du_meme.pdf", minimal_pdf, "application/pdf")}
+        )
+
+        assert first.json()["is_duplicate"] is False
+        assert second.json()["is_duplicate"] is True
+        # The row handed back is the original, not a new one.
+        assert second.json()["id"] == first.json()["id"]
+        assert client.get("/cvs").json()["total"] == 1
+
+    def test_an_updated_cv_is_a_new_row(self, client, minimal_pdf, monkeypatch):
+        """Different bytes are a different document. Versioning a candidate is
+        a separate concern; what must not happen is silently discarding an
+        updated CV because the filename matched."""
+        self._fake_storage(monkeypatch)
+        client.post("/cvs", files={"file": ("cv.pdf", minimal_pdf, "application/pdf")})
+        updated = minimal_pdf.replace(b"trailer", b"% revision 2\ntrailer")
+        client.post("/cvs", files={"file": ("cv.pdf", updated, "application/pdf")})
+
+        assert client.get("/cvs").json()["total"] == 2
+
+    def test_one_firm_never_sees_another_firms_candidates(
+        self, client, minimal_pdf, monkeypatch
+    ):
+        """The isolation boundary, asserted rather than assumed.
+
+        Tenders are public notices and are shared. CVs are not: they are
+        personal data and a competitive asset, and a platform sold to several
+        firms leaks both the moment a query forgets its filter.
+        """
+        self._fake_storage(monkeypatch)
+        client.post(
+            "/cvs",
+            files={"file": ("cv_inetum.pdf", minimal_pdf, "application/pdf")},
+            headers={"X-Tenant-Id": "inetum"},
+        )
+
+        listing = client.get("/cvs", headers={"X-Tenant-Id": "concurrent"}).json()
+
+        assert listing["total"] == 0
+
+    def test_a_cv_from_another_firm_reads_as_missing_not_forbidden(
+        self, client, minimal_pdf, monkeypatch
+    ):
+        """403 would confirm the row exists. 404 says nothing at all."""
+        self._fake_storage(monkeypatch)
+        created = client.post(
+            "/cvs",
+            files={"file": ("cv.pdf", minimal_pdf, "application/pdf")},
+            headers={"X-Tenant-Id": "inetum"},
+        ).json()
+
+        response = client.get(
+            f"/cvs/{created['id']}/download", headers={"X-Tenant-Id": "concurrent"}
+        )
+
+        assert response.status_code == 404
+
+    def test_the_same_cv_may_exist_in_two_firms(self, client, minimal_pdf, monkeypatch):
+        """Deduplication is per organisation. Two firms holding the same
+        freelance CV is normal, and neither should learn it from the other."""
+        self._fake_storage(monkeypatch)
+        one = client.post(
+            "/cvs",
+            files={"file": ("cv.pdf", minimal_pdf, "application/pdf")},
+            headers={"X-Tenant-Id": "inetum"},
+        ).json()
+        two = client.post(
+            "/cvs",
+            files={"file": ("cv.pdf", minimal_pdf, "application/pdf")},
+            headers={"X-Tenant-Id": "concurrent"},
+        ).json()
+
+        assert two["is_duplicate"] is False
+        assert two["id"] != one["id"]
+
     def test_an_unsupported_extension_is_refused(self, client):
         response = client.post(
             "/cvs",

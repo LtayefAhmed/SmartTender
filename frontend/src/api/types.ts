@@ -232,9 +232,14 @@ export interface Cv {
   content_type: string;
   size_bytes: number;
   source: "upload" | "link";
+  /** Folder the file was imported from, without the filename. */
+  folder?: string | null;
   source_url: string | null;
   uploaded_by: string | null;
   created_at: string;
+  /** Set on an import response when the same bytes were already held — the row
+   *  returned is then the existing one, not a new import. */
+  is_duplicate?: boolean;
 }
 
 export interface AcceptedResponse {
@@ -352,4 +357,56 @@ export interface ReferenceData {
   zones: { name: string; count: number }[];
   /** J360 calls these *activités*; matching its wording keeps the field recognisable. */
   activities: { name: string; id: number }[];
+}
+
+/** One candidate ranked against a tender, with the evidence that produced the
+ *  score. A ranking a bid manager cannot audit is one they are right to
+ *  distrust, so the proof travels with the number rather than beside it. */
+export interface CandidateMatch {
+  cv_id: string;
+  filename: string;
+  /** The person, when the CV names one. Null for anonymised documents — a
+   *  guessed name would be taken as fact, so none is offered. */
+  display_name: string | null;
+  /** The job title. Useful on its own: "ACCOUNTANT" says more than a filename. */
+  headline: string | null;
+  /** name, else headline, else filename — already resolved server-side so the
+   *  modal, an export and a notification all say the same thing. */
+  label: string;
+  score: number;
+  similarity: number;
+  coverage: number;
+  technology_ratio: number;
+  matched_technologies: string[];
+  missing_technologies: string[];
+  vetoed: boolean;
+  veto_reason: string | null;
+  evidence: { requirement: number; score: number; passage: string }[];
+}
+
+export interface MatchResult {
+  tender_id: string;
+  title: string;
+  status: "ok" | "no_text" | "missing";
+  message?: string;
+  requirements: { position: number; document: string | null; text: string }[];
+  required_technologies: string[];
+  /** Counted over every profile considered, not over the slice returned. The
+   *  refused ones score zero and always sort last, so a top-N slice contains
+   *  none of them — reporting the slice would say "0 écartés" on a run that
+   *  floored three hundred. */
+  kept_total: number;
+  vetoed_total: number;
+  /** What the model read out of the requirement passages. Null when it was
+   *  unavailable — null and "nothing required" are different facts. */
+  structured_requirements: {
+    technologies: string[];
+    certifications: string[];
+    experience_min_annees: number | null;
+    langues: string[];
+    profils: string[];
+    exigences: string[];
+  } | null;
+  weights: Record<string, number | string>;
+  candidates: CandidateMatch[];
 }

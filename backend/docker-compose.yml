@@ -20,6 +20,19 @@ x-app-env: &app-env
   SMARTTENDER_DB__PASSWORD: smarttender
   SMARTTENDER_DB__NAME: smarttender
   SMARTTENDER_REDIS__HOST: redis
+  SMARTTENDER_VECTOR__URL: http://qdrant:6333
+  # Mistral. Read from the host's .env rather than written here: the key is a
+  # secret and this file is committed. Absent, every LLM step is skipped and
+  # the platform behaves exactly as it did before — the pass is an improvement,
+  # never a dependency.
+  SMARTTENDER_LLM__MISTRAL_API_KEY: "${SMARTTENDER_LLM__MISTRAL_API_KEY:-}"
+  # tenders | tenders_and_cvs | off. Enforces the sovereignty boundary: a
+  # notice is public, a CV is personal data. Defaults to the safe side, so a
+  # deployment that has not decided sends no CVs.
+  SMARTTENDER_LLM__SCOPE: "${SMARTTENDER_LLM__SCOPE:-tenders}"
+  SMARTTENDER_LLM__MODEL: "${SMARTTENDER_LLM__MODEL:-mistral-small-latest}"
+  SMARTTENDER_LLM__TIMEOUT_SECONDS: "${SMARTTENDER_LLM__TIMEOUT_SECONDS:-30}"
+  SMARTTENDER_LLM__MAX_INPUT_CHARS: "${SMARTTENDER_LLM__MAX_INPUT_CHARS:-12000}"
   SMARTTENDER_STORAGE__ENDPOINT: minio:9000
   # Where a BROWSER can reach MinIO. Presigned links are built with this host;
   # without it they carry the container name and fail in the only place they
@@ -87,6 +100,12 @@ x-app-base: &app-base
     # TUNTRUST certificates. Put the PEM files in ./certs (git-ignored) and
     # point SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH at /app/certs/<file>.pem.
     - ./certs:/app/certs:ro
+    # Embedding model weights — 536 MB of ONNX. Mounted rather than baked into
+    # the image: they are large binary assets that change on their own schedule,
+    # they are git-ignored, and copying them in would make every rebuild move
+    # half a gigabyte for a one-line code change.
+    # Fetch them once with: python scripts/fetch_models.py
+    - ./models:/app/models:ro
   restart: unless-stopped
 
 services:
@@ -134,6 +153,25 @@ services:
       - minio-data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Vector index for matching. Separate from PostgreSQL on purpose: an ANN
+  # search over a few hundred thousand passages is a different access pattern
+  # from the relational queries the rest of the platform makes, and mixing them
+  # means one slow scan starves the other.
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"   # REST + web dashboard at /dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      # The image carries no curl and no wget; bash's /dev/tcp is always there.
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -211,12 +249,27 @@ services:
       migrate: { condition: service_completed_successfully }
     healthcheck: *worker-healthcheck
 
+  # Model-bound work: embedding and indexing. Concurrency 1, and that number is
+  # the whole point of this service existing. Celery preforks, so each worker
+  # process loads its own copy of the 470 MB encoder — routed to a queue served
+  # at concurrency 8 it put 3.7 GB of identical model weights in memory and
+  # took the host down. One process, one model, work queued behind it.
+  worker-ai:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "ai", "--concurrency", "1",
+       "--hostname", "ai@%h", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *worker-healthcheck
+
   # I/O-bound and low-volume; also runs the housekeeping loops.
   worker-support:
     <<: *app-base
     command:
       ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
-       "--queues", "notifications,maintenance,ocr,ai", "--concurrency", "4",
+       "--queues", "notifications,maintenance,ocr", "--concurrency", "4",
        "--hostname", "support@%h", "--loglevel", "INFO"]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -272,6 +325,7 @@ services:
 
 volumes:
   postgres-data:
+  qdrant-data:
   redis-data:
   minio-data:
   prometheus-data:

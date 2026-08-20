@@ -6,6 +6,7 @@ import type { Page, TenderSummary, TenderDetail, RelevanceBand } from "../api/ty
 import { TopBar } from "../components/Layout";
 import { Badge, Card, Meter, Loading, ErrorState, Empty, Spinner } from "../components/ui";
 import { Drawer } from "../components/Drawer";
+import { MatchingModal } from "../components/MatchingModal";
 import { useToast } from "../components/toast";
 import {
   BAND_COLOR,
@@ -27,6 +28,10 @@ export function Tenders() {
   const [sort, setSort] = useState("-relevance_score");
   const [page, setPage] = useState(1);
   const openId = params.get("open");
+  //: Which tender the matching workspace is open for. Kept in local state
+  //: rather than the URL: it is a comparison the user runs, not a place they
+  //: navigate to or would want to share as a link.
+  const [matchFor, setMatchFor] = useState<{ id: string; title: string } | null>(null);
 
   useEffect(() => {
     setPage(1);
@@ -59,6 +64,13 @@ export function Tenders() {
 
   return (
     <>
+      {matchFor && (
+        <MatchingModal
+          tenderId={matchFor.id}
+          title={matchFor.title}
+          onClose={() => setMatchFor(null)}
+        />
+      )}
       <TopBar
         title="Appels d'offres"
         sub={`${total} résultat${total > 1 ? "s" : ""} · cliquer une ligne pour le détail et le scoring`}
@@ -125,6 +137,7 @@ export function Tenders() {
                       Échéance {sort.includes("deadline") ? (sort[0] === "-" ? "↓" : "↑") : ""}
                     </th>
                     <th>État</th>
+                    <th>Profils</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -159,6 +172,21 @@ export function Tenders() {
                       <td>
                         <Badge color={statusColor(t.pipeline_state)}>{t.pipeline_state}</Badge>
                       </td>
+                      <td>
+                        {/* stopPropagation: the row opens the detail drawer,
+                            and this opens the matching workspace. Two
+                            destinations from one row need two targets. */}
+                        <button
+                          className="btn sm"
+                          title="Comparer les CVs aux exigences de cet appel d'offres"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setMatchFor({ id: t.id, title: t.title });
+                          }}
+                        >
+                          ⧫ Profils
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -188,12 +216,26 @@ export function Tenders() {
         )}
       </div>
 
-      {openId && <TenderDrawer id={openId} onClose={() => setParams({})} />}
+      {openId && (
+        <TenderDrawer
+          id={openId}
+          onClose={() => setParams({})}
+          onMatch={(id, title) => setMatchFor({ id, title })}
+        />
+      )}
     </>
   );
 }
 
-function TenderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+function TenderDrawer({
+  id,
+  onClose,
+  onMatch,
+}: {
+  id: string;
+  onClose: () => void;
+  onMatch: (id: string, title: string) => void;
+}) {
   const toast = useToast();
   const detail = useQuery({
     queryKey: ["tender", id],
@@ -334,6 +376,19 @@ function TenderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
               <pre className="text-preview">{t.description}</pre>
             </Card>
           )}
+
+          {/* Opens the same workspace as the table button. The drawer shows
+              what the tender *is*; matching is a comparison that deserves the
+              screen, so it is a door rather than a panel squeezed in here. */}
+          <Card title="Profils correspondants">
+            <div className="tiny muted mb">
+              Compare les CVs de votre organisation aux exigences de cet appel d'offres,
+              avec le détail du score et les extraits qui le justifient.
+            </div>
+            <button className="btn sm primary" onClick={() => onMatch(t.id, t.title)}>
+              ⧫ Analyser les profils
+            </button>
+          </Card>
 
           {t.documents.length > 0 && (
             <Card title={`Pièces jointes (${t.documents.length})`}>

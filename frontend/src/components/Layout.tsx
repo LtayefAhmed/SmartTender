@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { Health, Page, Notification } from "../api/types";
 import { Dot } from "./ui";
+import { ThemeToggle } from "./ThemeToggle";
 
 const NAV = [
   {
@@ -120,7 +121,12 @@ export function TopBar({ title, sub, actions }: { title: string; sub?: string; a
         <h1>{title}</h1>
         {sub && <div className="sub">{sub}</div>}
       </div>
-      <div className="topbar-right">{actions}</div>
+      <div className="topbar-right">
+        {actions}
+        {/* Always present, on every page: a theme control a user has to hunt
+            for is one they stop using. */}
+        <ThemeToggle />
+      </div>
     </div>
   );
 }

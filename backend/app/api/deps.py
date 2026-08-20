@@ -27,6 +27,17 @@ class Principal:
 
     identity: str
     is_anonymous: bool = False
+    #: The organisation this caller acts for.
+    #:
+    #: Tenders are public notices and are shared; a CV is not. Two firms using
+    #: the platform must never see each other's candidates, and that boundary
+    #: is far cheaper to draw now — with three rows in the table — than to
+    #: retrofit across every query later.
+    #:
+    #: Defaults rather than being required: today there is one organisation,
+    #: and a deployment that has not thought about tenancy should behave
+    #: correctly rather than reject every request.
+    tenant: str = "default"
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -45,6 +56,7 @@ async def require_principal(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
 ) -> Principal:
     """Authenticate the caller, or reject with 401.
 
@@ -54,15 +66,20 @@ async def require_principal(
     """
     settings = get_settings()
     accepted = settings.api.api_keys
+    # Normalised because it becomes a stored partition key: "Inetum" and
+    # "inetum " must not create two invisible halves of one corpus.
+    tenant = (x_tenant_id or settings.api.default_tenant).strip().lower() or "default"
 
     if not accepted:
-        return Principal(identity=x_user_id or "anonymous", is_anonymous=True)
+        return Principal(
+            identity=x_user_id or "anonymous", is_anonymous=True, tenant=tenant
+        )
 
     if verify_api_key(x_api_key, accepted):
-        return Principal(identity=x_user_id or "service")
+        return Principal(identity=x_user_id or "service", tenant=tenant)
 
     if settings.api.allow_anonymous:
-        return Principal(identity="anonymous", is_anonymous=True)
+        return Principal(identity="anonymous", is_anonymous=True, tenant=tenant)
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

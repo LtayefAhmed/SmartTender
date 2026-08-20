@@ -44,14 +44,37 @@ __all__ = [
     "get_extractor",
 ]
 
-#: Filename fragments that mark the substantive pieces of a French public
-#: procurement dossier. CCTP, CCAP and the règlement de consultation carry the
+#: Filename fragments that mark the substantive pieces of a procurement
+#: dossier. CCTP, CCAP and the règlement de consultation carry the
 #: requirements; ATTRI, DC1 and DC2 are forms a bidder fills in rather than
 #: reads. Names are the only signal available before a file is opened, and
-#: French procurement is regular enough about them to make this worth using.
+#: procurement is regular enough about them to make this worth using.
+#:
+#: Two groups, both earned from real filenames in the corpus:
+#:
+#: * the standard French procurement acronyms;
+#: * words that describe technical content whatever the buyer calls the file —
+#:   a dossier's "Guidelines de développement" and "Architecture" annexes name
+#:   the required technologies and are worth as much to CV matching as the
+#:   CCTP, while matching none of the acronyms.
+#:
+#: ``develop`` rather than ``développement`` on purpose: it covers the French
+#: and English spellings and the misspelling that appears in a live dossier
+#: ("Okantis-Ard-Developement-1.1.0.pdf").
 _IMPORTANT_MARKERS = (
-    "cctp", "ccap", "cdc", "cahier", "reglement", "règlement", "_rc", "rc_",
+    "cctp", "ccap", "cdc", "cahier", "reglement", "règlement", "rc",
     "dce", "consultation", "technique", "cahier des charges", "annexe technique",
+    "develop", "architecture", "guideline", "specification", "exigence", "securite",
+)
+
+#: Matched on word boundaries, where a boundary is any of the separators that
+#: appear in real filenames. Substring matching put "rc" inside "recherche" and
+#: forced the earlier ``_rc`` / ``rc_`` workaround — which then missed
+#: "AWS-MPI-1857755-RC.pdf", a règlement de consultation, because the
+#: separator was a hyphen.
+_MARKER_PATTERN = re.compile(
+    r"(?:^|[\W_])(?:" + "|".join(re.escape(m) for m in _IMPORTANT_MARKERS) + r")",
+    re.IGNORECASE,
 )
 
 
@@ -88,11 +111,15 @@ def document_priority(name: str | None) -> int:
     """0 for a substantive document, 1 for anything else.
 
     Used wherever a cap can bind — the attachment limit, the archive member
-    limit — so that what gets dropped is the administrative filler and not the
-    specification.
+    limit — so that what gets dropped is administrative filler rather than the
+    specification, and later as a ranking weight over passages.
+
+    A filename is a *prior*, not a verdict. A buyer free to name a file
+    anything will occasionally name the specification "annexe 4", and nothing
+    here will know. That is why the value weights ranking instead of filtering:
+    a misjudged document is scored lower, never dropped.
     """
-    lowered = (name or "").lower()
-    return 0 if any(marker in lowered for marker in _IMPORTANT_MARKERS) else 1
+    return 0 if name and _MARKER_PATTERN.search(name) else 1
 
 _WHITESPACE = re.compile(r"[ \t ]+")
 _BLANK_LINES = re.compile(r"\n{3,}")

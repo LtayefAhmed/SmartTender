@@ -9,6 +9,7 @@ import { fmtBytes, fmtDate } from "../lib/format";
 
 interface Result {
   ok: boolean;
+  duplicate?: boolean;
   name: string;
   message: string;
   code?: string;
@@ -39,10 +40,28 @@ export function ImportCvs() {
       form.append("file", file);
       form.append("source", source);
       if (sourceUrl) form.append("source_url", sourceUrl);
+      // `webkitRelativePath` is set only by a directory picker, and holds
+      // "CVs/SAP/dupont.pdf". The folder is what a firm arranged deliberately —
+      // by practice, by client, by seniority — and flattening it into one pool
+      // throws that away for good, since nobody will re-file 500 CVs by hand.
+      const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
+      if (relative && relative.includes("/")) {
+        form.append("folder", relative.slice(0, relative.lastIndexOf("/")));
+      }
       try {
-        await api.upload<Cv>("/cvs", form);
-        setResults((r) => [{ ok: true, name: file.name, message: "Importé." }, ...r]);
-        toast.ok("CV importé", file.name);
+        const saved = await api.upload<Cv>("/cvs", form);
+        // Already held is not a failure and must not read like one: a folder
+        // re-imported next month is mostly duplicates, and painting it red
+        // would train the user to ignore the panel.
+        if (saved.is_duplicate) {
+          setResults((r) => [
+            { ok: true, duplicate: true, name: file.name, message: "Déjà présent — identique à un CV existant." },
+            ...r,
+          ]);
+        } else {
+          setResults((r) => [{ ok: true, name: file.name, message: "Importé." }, ...r]);
+          toast.ok("CV importé", file.name);
+        }
       } catch (e) {
         const err = e as ApiError;
         setResults((r) => [{ ok: false, name: file.name, message: err.message, code: err.code }, ...r]);
@@ -171,12 +190,14 @@ export function ImportCvs() {
                     style={{
                       padding: 12,
                       background: "var(--panel-2)",
-                      borderLeft: `3px solid ${r.ok ? "var(--teal)" : "var(--red)"}`,
+                      borderLeft: `3px solid ${
+                        !r.ok ? "var(--red)" : r.duplicate ? "var(--muted-2)" : "var(--teal)"
+                      }`,
                     }}
                   >
                     <div className="row spread">
                       <span style={{ fontWeight: 600, fontSize: 13 }}>
-                        {r.ok ? "✅" : "✕"} {r.name}
+                        {!r.ok ? "✕" : r.duplicate ? "=" : "✅"} {r.name}
                       </span>
                       {r.code && <span className="badge red tiny mono">{r.code}</span>}
                     </div>
@@ -200,16 +221,38 @@ export function ImportCvs() {
               {cvs.data.items.map((c) => (
                 <div key={c.id} className="row spread">
                   <div style={{ minWidth: 0 }}>
-                    <div className="tiny" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {c.original_filename}
-                    </div>
+                    {/* Importing without being able to reopen is half a
+                        feature: comparing two profiles means reading them, and
+                        the object store is not an interface. */}
+                    <button
+                      className="tiny"
+                      onClick={() => openCv(c.id, toast)}
+                      title="Ouvrir le CV"
+                      style={{
+                        background: "transparent",
+                        border: 0,
+                        padding: 0,
+                        color: "var(--teal)",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        maxWidth: "100%",
+                      }}
+                    >
+                      ↓ {c.original_filename}
+                    </button>
                     <div className="tiny muted">
                       {fmtBytes(c.size_bytes)} · {fmtDate(c.created_at)}
-                      {c.uploaded_by ? ` · ${c.uploaded_by}` : ""}
+                      {c.folder ? ` · ${c.folder}` : ""}
                     </div>
                   </div>
                   <div className="row">
-                    <Badge color={c.source === "link" ? "blue" : "gray"}>{c.source}</Badge>
+                    {/* Shown only when it says something. "upload" is the
+                        default and holds on every row, so it was pure noise;
+                        "link" means the file came from a URL, which is worth
+                        knowing when its provenance is questioned. */}
+                    {c.source === "link" && <Badge color="blue">lien</Badge>}
                     <button className="btn sm ghost" onClick={() => remove(c.id)}>
                       ✕
                     </button>
@@ -222,4 +265,19 @@ export function ImportCvs() {
       </div>
     </>
   );
+}
+
+/** Open a stored CV through a short-lived presigned link.
+ *
+ *  The API never streams the bytes: a request handler held for the whole
+ *  transfer is a worker that cannot serve anything else. It returns a URL and
+ *  the browser fetches the object store directly.
+ */
+async function openCv(id: string, toast: ReturnType<typeof useToast>) {
+  try {
+    const res = await api.get<{ url: string }>(`/cvs/${id}/download`);
+    window.open(res.url, "_blank", "noopener");
+  } catch (e) {
+    toast.err("Ouverture impossible", (e as Error).message);
+  }
 }

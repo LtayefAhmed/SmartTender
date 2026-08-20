@@ -1,0 +1,133 @@
+# Technologies a tender can require and a CV can evidence.
+#
+# WHY THIS IS NOT config/scoring.yaml
+# -----------------------------------
+# scoring.yaml answers "is this tender in our line of business" — it holds
+# service categories: tierce maintenance applicative, portail, assistance
+# technique. Correct for that question, and useless for this one. Locked
+# against it, a real consultation asking for Symfony, PHP, Docker, Kubernetes,
+# GitLab and SonarQube matched on "monitoring" and "DevOps" and scored every
+# candidate at 10-20% technology coverage.
+#
+# The same file already documents the distinction between `terms` (what Inetum
+# calls its offering) and `search_terms` (what a buyer writes in a notice).
+# This is the third vocabulary: what an engineer actually works with.
+#
+# HOW IT IS USED
+# --------------
+# A term found in the tender text becomes *required*. A candidate evidencing
+# none of the required terms is vetoed to zero, however well their prose reads
+# — the anti-bias rule from the specification.
+#
+# Matching is on word boundaries, for the reason scoring learned the hard way:
+# substring matching fired `SI` inside "assimilés" and `.NET` inside a buyer
+# named "Khazanet".
+#
+# EXTENDING IT
+# ------------
+# This list is a starting point drawn from the corpus at hand, not a complete
+# taxonomy. Adding a term is a config edit and a `POST /sources/sync`; missing
+# one costs recall on that technology and nothing else.
+version: 1
+
+groups:
+  languages:
+    - "Java"
+    - "Python"
+    - "PHP"
+    - "C#"
+    - ".NET"
+    - "TypeScript"
+    - "JavaScript"
+    - "Go"
+    - "Kotlin"
+    - "Swift"
+    - "COBOL"
+    - "ABAP"
+    - "PL/SQL"
+    - "Scala"
+
+  frameworks:
+    - "Spring"
+    - "Spring Boot"
+    - "Angular"
+    - "React"
+    - "Vue.js"
+    - "Symfony"
+    - "Laravel"
+    - "Django"
+    - "FastAPI"
+    - "Node.js"
+    - "NestJS"
+    - "Quarkus"
+    - ".NET Core"
+    - "Hibernate"
+
+  data:
+    - "PostgreSQL"
+    - "MySQL"
+    - "Oracle Database"
+    - "SQL Server"
+    - "MongoDB"
+    - "Redis"
+    - "Elasticsearch"
+    - "Kafka"
+    - "Snowflake"
+    - "Power BI"
+    - "Talend"
+    - "Qlik"
+    - "Tableau"
+
+  cloud_devops:
+    - "Docker"
+    - "Kubernetes"
+    - "OpenShift"
+    - "Terraform"
+    - "Ansible"
+    - "Jenkins"
+    - "GitLab"
+    - "GitHub Actions"
+    - "SonarQube"
+    - "Azure"
+    - "AWS"
+    - "Google Cloud"
+    - "Prometheus"
+    - "Grafana"
+
+  integration:
+    - "WSO2"
+    - "MuleSoft"
+    - "Apache Camel"
+    - "REST"
+    - "SOAP"
+    - "GraphQL"
+    - "OAuth"
+    - "OpenID Connect"
+    - "SAML"
+    - "SSO"
+    - "API Manager"
+    - "ESB"
+    - "Swagger"
+
+  products:
+    - "SAP"
+    - "S/4HANA"
+    - "SAGE X3"
+    - "Salesforce"
+    - "SharePoint"
+    - "Dynamics 365"
+    - "ServiceNow"
+    - "Alfresco"
+    - "Drupal"
+    - "WordPress"
+    - "Odoo"
+
+  practices:
+    - "Scrum"
+    - "SAFe"
+    - "ITIL"
+    - "DevOps"
+    - "CI/CD"
+    - "TDD"
+    - "microservices"
+    - "RGPD"

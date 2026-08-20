@@ -32,19 +32,33 @@ cp .env.example .env
 
 Le fichier `.env` **n'est pas dans le dépôt** — il contient des identifiants.
 Les valeurs par défaut suffisent pour tout faire tourner ; seul J360 demande un
-compte (voir l'étape 5).
+compte (voir l'étape 6).
 
-### 3. Lancer la pile
+### 3. Télécharger les modèles d'embedding
+
+```bash
+python scripts/fetch_models.py
+```
+
+536 Mo de poids ONNX, absents du dépôt : des binaires de cette taille n'ont
+rien à faire dans un historique git. Le script est idempotent — un fichier déjà
+présent est laissé tel quel — et les conteneurs les lisent par un montage
+`./models`, donc un seul téléchargement sert toute la pile.
+
+Sans eux, l'ingestion, le scoring et les notifications fonctionnent
+normalement ; seul le rapprochement CV / appel d'offres est indisponible.
+
+### 4. Lancer la pile
 
 ```bash
 docker compose up -d
 ```
 
-Treize conteneurs démarrent : PostgreSQL, Redis, MinIO, l'API, trois workers
-Celery, l'ordonnanceur, et les outils d'observation. Les migrations
+Quinze conteneurs démarrent : PostgreSQL, Redis, MinIO, Qdrant, l'API, quatre
+workers Celery, l'ordonnanceur, et les outils d'observation. Les migrations
 s'appliquent automatiquement.
 
-### 4. Vérifier que tout répond
+### 5. Vérifier que tout répond
 
 ```bash
 scripts\preflight          # Windows
@@ -66,8 +80,9 @@ Puis ouvre **<http://localhost:3000>**.
 | Fichiers stockés (MinIO) | <http://localhost:9001> |
 | Files Celery (Flower) | <http://localhost:5555> |
 | Métriques (Grafana) | <http://localhost:3001> |
+| Index vectoriel (Qdrant) | <http://localhost:6333/dashboard> |
 
-### 5. Créer un profil de notification
+### 6. Créer un profil de notification
 
 ```bash
 docker compose exec api smarttender-admin seed --user operator --email <ton.email>@inetum.com
@@ -184,6 +199,17 @@ Volontairement, parce que ce sont des secrets :
 |---|---|
 | `backend/.env` | `cp .env.example .env` puis compléter |
 | `backend/certs/j360-session.json` | `smarttender-admin capture-login j360` |
+| `backend/models/` | `python scripts/fetch_models.py` — 536 Mo de poids ONNX |
+
+La clé Mistral se colle dans `.env`, ligne `SMARTTENDER_LLM__MISTRAL_API_KEY`.
+Sans elle, chaque étape LLM est ignorée et la plateforme se comporte comme
+avant : le raffinement est une amélioration, jamais une dépendance.
+
+`SMARTTENDER_LLM__SCOPE` porte une décision, pas un réglage : `tenders`
+n'envoie que des avis publics, `tenders_and_cvs` y ajoute les CV. Dans les deux
+cas le texte est anonymisé avant de partir — noms, courriels, téléphones,
+adresses et identifiants sont remplacés par des marqueurs typés, et les
+technologies comme les montants sont préservés.
 
 Ne les commite jamais. Le `.gitignore` les couvre, mais un `git add -f` passe
 outre.

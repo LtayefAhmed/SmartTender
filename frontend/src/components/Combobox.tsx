@@ -120,7 +120,9 @@ export function Combobox({
             maxHeight: 260,
             overflowY: "auto",
             background: "var(--panel)",
-            boxShadow: "0 8px 24px rgba(0,0,0,.4)",
+            // Uses the shared token so the popover matches every other
+            // floating surface, light or dark.
+            boxShadow: "var(--shadow-lg)",
           }}
         >
           {matches.map((o) => (

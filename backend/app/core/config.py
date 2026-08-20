@@ -39,6 +39,9 @@ class ApiSettings(_Base):
     host: str = "0.0.0.0"
     port: int = 8000
     root_path: str = ""
+    #: The organisation a request belongs to when it does not name one.
+    #: Tenders are public and shared; CVs are partitioned by this value.
+    default_tenant: str = "default"
     title: str = "SmartTender AI — Ingestion API"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
     #: Static API keys accepted by the ``X-API-Key`` header. Empty disables the
@@ -221,9 +224,94 @@ class SemanticSettings(_Base):
     #: ``lexical`` (pure python, deterministic, zero-dependency) or ``minilm``
     #: (ONNX all-MiniLM-L6-v2, requires the ``semantic`` extra).
     backend: str = "lexical"
+    #: Used for *deduplication* similarity only.
     model_path: str = "./models/all-MiniLM-L6-v2"
+    #: Used for *matching*. Multilingual, and chosen on a measurement rather
+    #: than a preference: over ten French procurement pairs, the English
+    #: all-MiniLM scored unrelated pairs at 0.166 on average while this one
+    #: scored them at 0.042. Matching positives were equivalent (0.489 vs
+    #: 0.494) — what the multilingual model buys is the ability to say "these
+    #: have nothing to do with each other", which is what makes a threshold
+    #: mean anything.
+    embedding_model_path: str = "./models/paraphrase-multilingual-MiniLM-L12-v2"
     max_sequence_length: int = 256
     cache_size: int = 4096
+
+
+class LlmSettings(_Base):
+    """Mistral, used to refine what the deterministic pipeline could not.
+
+    Three properties make this an *improvement* rather than a dependency, and
+    all three are deliberate:
+
+    **Absent by default.** With no key the platform behaves exactly as it does
+    today. Every LLM step checks :meth:`enabled` and falls back to its
+    deterministic result, so a missing key, an expired quota or an outage costs
+    quality and never availability.
+
+    **Scoped.** ``parcours_smarttender.html`` states as a cross-cutting
+    guarantee that CVs never leave the server (RGPD / INPDP). Tender notices are
+    public documents and lose nothing by being sent to a third party; a CV is
+    personal data about an employee. ``scope`` is what keeps those two cases
+    apart, and it defaults to the conservative one.
+
+    **Bounded.** A per-document character ceiling and a timeout, because an
+    LLM that silently costs more on a long dossier is how a free tier becomes a
+    bill, and a slow one is how ingestion stops.
+    """
+
+    mistral_api_key: str = ""
+    #: ``tenders`` | ``tenants_and_cvs`` | ``off``
+    scope: str = "tenders"
+    model: str = "mistral-small-latest"
+    base_url: str = "https://api.mistral.ai/v1"
+    timeout_seconds: float = 30.0
+    max_input_chars: int = 12_000
+    #: Sampling is off: these are extraction tasks with a right answer, and a
+    #: creative one is a wrong one.
+    temperature: float = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.mistral_api_key) and self.scope != "off"
+
+    def allows(self, kind: str) -> bool:
+        """Whether this document kind may be sent.
+
+        ``kind`` is ``tender`` or ``cv``. Asked at every call site rather than
+        once at startup, so flipping the scope takes effect without a redeploy
+        and a future third kind fails closed.
+        """
+        if not self.enabled:
+            return False
+        if kind == "tender":
+            return self.scope in {"tenders", "tenders_and_cvs"}
+        if kind == "cv":
+            return self.scope == "tenders_and_cvs"
+        return False
+
+
+class VectorSettings(_Base):
+    """Where embedded passages are indexed and searched.
+
+    Kept out of PostgreSQL deliberately: an approximate-nearest-neighbour
+    search over hundreds of thousands of passages is a different access pattern
+    from the platform's relational queries, and sharing one engine means a
+    matching run and a dashboard refresh contend for the same buffers.
+    """
+
+    url: str = "http://localhost:6333"
+    #: A matching run must never hang a request. Qdrant answers a top-k in
+    #: milliseconds when healthy, so a long timeout only hides a problem.
+    timeout_seconds: float = 10.0
+    #: Passages of tenders, and passages of CVs. Two collections rather than
+    #: one with a type field: they are searched separately, sized differently,
+    #: and a CV must never surface in a tender search by accident.
+    tender_collection: str = "tender_passages"
+    cv_collection: str = "cv_passages"
+    #: Points written per request. Large enough to be efficient, small enough
+    #: that one failed batch is cheap to retry.
+    upsert_batch_size: int = 128
 
 
 class WorkerSettings(_Base):
@@ -269,6 +357,8 @@ class Settings(_Base):
     proxy: ProxySettings = Field(default_factory=ProxySettings)
     extraction: ExtractionSettings = Field(default_factory=ExtractionSettings)
     semantic: SemanticSettings = Field(default_factory=SemanticSettings)
+    vector: VectorSettings = Field(default_factory=VectorSettings)
+    llm: LlmSettings = Field(default_factory=LlmSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
 
     @field_validator("config_dir", mode="before")

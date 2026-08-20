@@ -198,6 +198,14 @@ def extract_tender_text(self: PipelineTask, tender_id: str) -> dict[str, Any]:
             outcome["error"] = type(exc).__name__
 
         score_tender.apply_async(kwargs={"tender_id": tender_id}, queue="scoring")
+
+        # Indexing runs alongside scoring rather than after it: the two read the
+        # same text and neither needs the other's result. Chaining them would
+        # add the embedding time to every tender's path to the dashboard for no
+        # benefit, and a vector store outage would delay scoring.
+        from app.workers.tasks.indexing import index_tender
+
+        index_tender.apply_async(kwargs={"tender_id": tender_id}, queue="ai")
         return outcome
 
 
@@ -238,6 +246,26 @@ def _run_extraction(session, tender, sources, storage, extractor) -> dict[str, A
             logger.info("extraction.warning", document=name or key, warning=warning)
 
     text, truncated = clean_extracted_text("\n\n".join(collected), max_chars=limit)
+
+    # OCR output is repaired before it is stored, not after. A scanned Tunisian
+    # notice comes back with Arabic glyphs half-transliterated into Latin —
+    # "haloll التجارة و تنمية aylig" — and no rule tells that from a reference
+    # number, while a model reading the surrounding sentence does. Measured on
+    # one: 2 680 characters in, 2 574 out, the mangled header gone and all nine
+    # numeric facts intact.
+    #
+    # Only for `ocr` and `mixed`: a digital PDF needs no repair, and paying for
+    # a call on every clean document would be spending to change nothing. The
+    # refinement returns the deterministic text on any doubt, so a missing key,
+    # a timeout or an answer that looks summarised costs quality, never
+    # content.
+    if text and methods & {"ocr", "mixed"}:
+        from app.services.refinement import refine_ocr_text
+
+        refined = refine_ocr_text(text, kind="tender")
+        if refined.changed:
+            logger.info("extraction.refined", before=len(text), after=len(refined.text))
+            text = refined.text
 
     tender.extracted_text = text or None
     tender.extraction_chars = len(text)

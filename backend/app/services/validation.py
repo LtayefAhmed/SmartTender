@@ -82,16 +82,35 @@ _FORBIDDEN_MIME = frozenset(
     }
 )
 
-#: PDF constructs that make a viewer *do* something rather than display it.
+#: PDF constructs that carry executable or embedded payloads. A document
+#: holding one of these is refused outright.
 _PDF_ACTIVE = (
     re.compile(rb"/JavaScript\b"),
     re.compile(rb"/JS\b"),
-    re.compile(rb"/OpenAction\b"),
-    re.compile(rb"/AA\b"),           # additional actions
     re.compile(rb"/Launch\b"),
     re.compile(rb"/EmbeddedFile\b"),
     re.compile(rb"/RichMedia\b"),
     re.compile(rb"/XFA\b"),
+)
+
+#: Containers that *may* hold an action, and usually hold a destination.
+#:
+#: ``/OpenAction [3 0 R /FitH 800]`` means "open at page 3, fit the width" and
+#: is what a generator writes when a document should not open at 100% zoom.
+#: ``/OpenAction << /S /JavaScript /JS (...) >>`` is the dangerous form — and
+#: it necessarily carries ``/JavaScript`` and ``/JS``, both of which are
+#: refused above on their own. Screening the container therefore adds no
+#: detection, and it refused a legitimate Inetum CV whose only sin was opening
+#: at the right zoom level.
+#:
+#: They are still recorded, because "this file wanted to do something on open"
+#: is worth knowing when someone later downloads it. Nothing in this pipeline
+#: ever renders a PDF — text is extracted by pypdf and pypdfium2, neither of
+#: which executes an action — so the risk being managed here is to a human
+#: opening the file in a viewer, not to the platform.
+_PDF_ACTION_CONTAINERS = (
+    re.compile(rb"/OpenAction\b"),
+    re.compile(rb"/AA\b"),           # additional actions
 )
 
 _HTML_ACTIVE = (
@@ -368,11 +387,17 @@ class UploadValidator:
                 if pattern.search(content):
                     self._fail(
                         SuspiciousContentError(
-                            "PDF contains active content (scripts, auto-actions or "
-                            "embedded files) and was refused.",
+                            "PDF contains an executable script or an embedded file "
+                            "and was refused.",
                             field="file",
                             context={"marker": pattern.pattern.decode("ascii", "replace")},
                         )
+                    )
+            for pattern in _PDF_ACTION_CONTAINERS:
+                if pattern.search(content):
+                    warnings.append(
+                        f"PDF declares {pattern.pattern.decode('ascii', 'replace')}; "
+                        "no executable payload was found alongside it."
                     )
         return None
 

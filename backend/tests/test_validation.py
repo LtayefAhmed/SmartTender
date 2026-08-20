@@ -53,6 +53,23 @@ class TestAcceptedUploads:
         result = validator.validate(html, filename="avis.html")
         assert "Avis d'appel d'offres" in result.text_preview
 
+    def test_a_pdf_that_opens_at_a_chosen_page_is_accepted(self, validator, minimal_pdf):
+        """``/OpenAction`` is a container, and it usually holds a destination.
+
+        ``[3 0 R /FitH 800]`` means "open at page 3, fit the width" — what a
+        generator writes so a document does not open at 100% zoom. Refusing the
+        keyword turned away a legitimate Inetum CV. The dangerous form carries
+        ``/JavaScript`` and ``/JS``, both refused on their own, so screening
+        the container detected nothing and cost real documents.
+        """
+        benign = minimal_pdf.replace(b"trailer", b"/OpenAction [ 3 0 R /FitH 800 ]\ntrailer")
+
+        result = validator.validate(benign, filename="CV_Inetum.pdf")
+
+        assert result.content_type == "application/pdf"
+        # Accepted, but not silently: the declaration is still reported.
+        assert any("OpenAction" in warning for warning in result.warnings)
+
     def test_mismatched_declared_type_is_a_warning_not_a_rejection(
         self, validator, minimal_pdf
     ):
@@ -93,10 +110,14 @@ class TestRejectedUploads:
         hostile = minimal_pdf.replace(b"trailer", b"/JavaScript (app.alert\\(1\\))\ntrailer")
         with pytest.raises(SuspiciousContentError) as excinfo:
             validator.validate(hostile, filename="x.pdf")
-        assert "active content" in excinfo.value.message
+        assert "executable script" in excinfo.value.message
 
-    def test_pdf_with_an_auto_action(self, validator, minimal_pdf):
-        hostile = minimal_pdf.replace(b"trailer", b"/OpenAction 5 0 R\ntrailer")
+    def test_pdf_with_an_auto_action_carrying_a_script(self, validator, minimal_pdf):
+        """The dangerous shape of ``/OpenAction`` — and it is refused for the
+        payload it carries, not for the container."""
+        hostile = minimal_pdf.replace(
+            b"trailer", b"/OpenAction << /S /JavaScript /JS (app.alert\\(1\\)) >>\ntrailer"
+        )
         with pytest.raises(SuspiciousContentError):
             validator.validate(hostile, filename="x.pdf")
 

@@ -9,7 +9,12 @@ independently and cannot starve one another:
 ``parsing``        CPU-bound, seconds. The main pipeline throughput queue.
 ``ocr``            very CPU- and memory-heavy. Its own workers, low concurrency,
                    because two concurrent OCR jobs on a small box will swap.
-``ai``             LLM/embedding calls: slow, rate-limited, retry-prone.
+``ai``             LLM and embedding work. Memory-heavy for a reason that is
+                   easy to miss: Celery preforks, so *every worker process*
+                   loads its own copy of the model. Eight processes and a
+                   470 MB encoder is 3.7 GB of resident memory, which is how a
+                   laptop stops responding. This queue is served by one worker
+                   at concurrency 1 — the model is loaded once and reused.
 ``scoring``        cheap and fast; kept separate so a re-scoring sweep after a
                    weights change does not sit behind an hour of scraping.
 ``notifications``  I/O-bound on SMTP, must stay responsive.
@@ -58,6 +63,13 @@ TASK_ROUTES = {
     "app.workers.tasks.pipeline.extract_*": {"queue": "ai"},
     "app.workers.tasks.pipeline.score_*": {"queue": "scoring"},
     "app.workers.tasks.pipeline.*": {"queue": "parsing"},
+    # Indexing loads the embedding model. It belongs on `ai` with the rest of
+    # the model-bound work, never on a high-concurrency queue: routed to
+    # `scoring` (concurrency 8) it put eight copies of a 470 MB encoder in
+    # memory and took the machine down.
+    "app.workers.tasks.indexing.*": {"queue": "ai"},
+    "app.workers.tasks.matching.*": {"queue": "ai"},
+    "app.workers.tasks.cvs.*": {"queue": "ocr"},
     "app.workers.tasks.notifications.*": {"queue": "notifications"},
     "app.workers.tasks.maintenance.*": {"queue": "maintenance"},
 }

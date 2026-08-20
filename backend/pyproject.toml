@@ -72,19 +72,28 @@ dependencies = [
     "numpy>=1.26",
     "Pillow>=10.2",
 
+    # --- Vector index for matching ---------------------------------------
+    # Kept out of PostgreSQL: an ANN search over hundreds of thousands of
+    # passages is a different access pattern from the relational queries the
+    # rest of the platform makes.
+    "qdrant-client>=1.9",
+    # Sentence embeddings on CPU. onnxruntime keeps torch out of the image
+    # (2 GB against 60 MB) and the tokenizers wheel is native and fast.
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+
     # --- Config / misc ---------------------------------------------------
     "PyYAML>=6.0",
     "orjson>=3.9",
 ]
 
 [project.optional-dependencies]
-# Heavy, optional semantic backend. The platform degrades gracefully to the
-# pure-python lexical backend when this is not installed.
-semantic = [
-    "onnxruntime>=1.17",
-    "tokenizers>=0.15",
-    "numpy>=1.26",
-]
+# Was the optional home of onnxruntime and tokenizers, back when embeddings
+# only powered an alternative *deduplication* backend the platform could
+# degrade away from. Matching cannot degrade away from them — without an
+# encoder there is nothing to search — so they moved into the core list and
+# this extra is kept only so `pip install .[semantic]` does not break.
+semantic = []
 # Optional libmagic escalation for MIME sniffing (the built-in signature
 # sniffer works without it and is the cross-platform default).
 magic = [
