@@ -105,7 +105,8 @@ surfacing as an opaque SSL error mid-run.
 `GET /sources/registry` names the specific variables still needed, so
 `credentials_missing` is an instruction rather than a riddle.
 
-> **In Docker**, these are interpolated from `.env` by Compose. Hardcoding them
+> **In Docker**, these are interpolated from the repository root's `.env` by
+> Compose, which reads the `.env` next to its own file. Hardcoding them
 > as empty strings in `docker-compose.yml` would silently override real values
 > and leave every paid source reporting `credentials_missing` with no visible
 > cause.

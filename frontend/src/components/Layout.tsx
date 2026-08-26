@@ -24,7 +24,10 @@ const NAV = [
   },
   {
     section: "Matching",
-    items: [{ to: "/matching/cv-import", icon: "⧫", label: "Import CVs" }],
+    items: [
+      { to: "/matching/cv-import", icon: "⧫", label: "Import CVs" },
+      { to: "/matching/recherche", icon: "⌕", label: "Recherche de profils" },
+    ],
   },
   {
     section: "Suivi",

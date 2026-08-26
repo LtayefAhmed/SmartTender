@@ -410,3 +410,70 @@ export interface MatchResult {
   weights: Record<string, number | string>;
   candidates: CandidateMatch[];
 }
+
+/** A criterion present in the organisation's CV base, with how many profiles
+ *  hold it. The count is what stops a recruiter picking a filter that returns
+ *  nothing — an empty result teaches people to distrust the screen. */
+export interface Facet {
+  value: string;
+  count: number;
+}
+
+export interface EducationFacet {
+  value: number;
+  label: string;
+  count: number;
+}
+
+export interface ProfileFacets {
+  profiles: number;
+  technologies: Facet[];
+  languages: Facet[];
+  certifications: Facet[];
+  education: EducationFacet[];
+}
+
+export interface ProfileHit {
+  cv_id: string;
+  label: string;
+  filename: string;
+  score: number;
+  similarity: number;
+  matched_technologies: string[];
+  matched_languages: string[];
+  missing_languages: string[];
+  matched_certifications: string[];
+  education_level: number | null;
+  education_label: string | null;
+  meets_education: boolean;
+  evidence: { score: number; passage: string }[];
+}
+
+export interface ProfileSearchResult {
+  status: "ok" | "empty";
+  /** Before the limit: twenty out of two hundred and twenty out of twenty are
+   *  different answers, and the recruiter is deciding whether to narrow. */
+  total: number;
+  weights: Record<string, number | string>;
+  query: {
+    text: string;
+    technologies: string[];
+    languages: string[];
+    certifications: string[];
+    education_min: number | null;
+  };
+  results: ProfileHit[];
+}
+
+/** Filters read out of an uploaded job description, for the user to correct
+ *  before searching — never applied silently. */
+export interface JobDescriptionReading {
+  status: string;
+  llm_used: boolean;
+  filename: string;
+  technologies: string[];
+  languages: string[];
+  certifications: string[];
+  education_min: number | null;
+  text: string;
+}

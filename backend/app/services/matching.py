@@ -196,18 +196,84 @@ def technology_lexicon() -> tuple[str, ...]:
     return tuple(terms)
 
 
+#: Terms that are also ordinary words, with the contexts that disqualify an
+#: occurrence. Word boundaries are not enough for these: "Java" matched
+#: "Central **Java** Inter-Mission School" — the Indonesian island — and put an
+#: English teacher on a Java shortlist. The same trap as "SAGE de la Lys" in
+#: scoring, and the same remedy: for an ambiguous token, demand that it not be
+#: standing in a context that gives it another meaning.
+#:
+#: An occurrence in one of these contexts is discarded; a term surviving
+#: nowhere else in the document is absent. A CV that mentions both the island
+#: and the language therefore still counts, which is the behaviour that keeps
+#: this from costing recall.
+_AMBIGUOUS: dict[str, str] = {
+    "java": (
+        r"(?:central|west|east|jawa|ile de|island|sea of|mer de)\s+java"
+        r"|java\s+(?:sea|island|timur|barat|tengah)"
+    ),
+    "tableau": (
+        r"\btableau\s+(?:de\s+bord|comparatif|r[ée]capitulatif|suivant|ci-)"
+        r"|\bdans\s+le\s+tableau\b"
+    ),
+    "rest": r"\bthe\s+rest\b|\brest\s+of\s+the\b|\bau\s+repos\b",
+    "safe": (
+        r"\bsafe\s+(?:working|environment|practices?|manner|distance)\b"
+        r"|\bkeep\s+safe\b"
+    ),
+}
+
+
 def required_technologies(text: str) -> list[str]:
-    """Technologies the tender names, in the order the lexicon lists them.
+    """Technologies the text names, in the order the lexicon lists them.
 
     Word-boundary matching, for the reason scoring learned the hard way:
     substring matching fired ``SI`` inside "assimilés" and ``.NET`` inside a
     buyer named "Khazanet", and put a waste-collection contract at the top of
     the dashboard.
+
+    Boundaries alone are still not enough for a handful of tokens that are also
+    ordinary words — see :data:`_AMBIGUOUS`.
     """
     from app.services.scoring import _contains_term
 
     blob = normalize_text(text)
-    return [term for term in technology_lexicon() if _contains_term(blob, term)]
+    found: list[str] = []
+    for term in technology_lexicon():
+        if not _contains_term(blob, term):
+            continue
+        disqualifier = _AMBIGUOUS.get(term.lower())
+        if disqualifier and not _has_genuine_occurrence(blob, term, disqualifier):
+            continue
+        found.append(term)
+    return found
+
+
+def _has_genuine_occurrence(blob: str, term: str, disqualifier: str) -> bool:
+    """Whether the term appears at least once outside a disqualifying phrase.
+
+    The disqualifier must *overlap* the occurrence, not merely sit near it. A
+    first version searched a 40-character window and produced a worse bug than
+    the one it fixed: a genuine Java developer who happened to mention growing
+    up in Central Java lost the skill entirely, because the island poisoned the
+    language two sentences away. A false negative on a real competence costs
+    more than a false positive a human can dismiss on sight.
+    """
+    pattern = _term_pattern_for(term)
+    if pattern is None:
+        return True
+    spans = [m.span() for m in re.finditer(disqualifier, blob, re.IGNORECASE)]
+    for match in pattern.finditer(blob):
+        inside = any(start <= match.start() and match.end() <= end for start, end in spans)
+        if not inside:
+            return True
+    return False
+
+
+def _term_pattern_for(term: str) -> re.Pattern[str] | None:
+    from app.services.scoring import _term_pattern
+
+    return _term_pattern(term)
 
 
 def extract_requirements(

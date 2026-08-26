@@ -59,19 +59,19 @@ in the running stack: **0.24 (low relevance) without extracted text, 0.79
 > onboarding end to end. This section is the short form.
 
 ```bash
-cd backend
-cp .env.example .env
+cp .env.example .env  # at the REPOSITORY ROOT, next to docker-compose.yml
 
+cd backend
 make install          # virtualenv + dependencies
 make test             # 475 tests, no infrastructure required, ~10 seconds
 
-docker compose up -d  # full stack: postgres, redis, minio, api, 3 workers, beat
+make up               # full stack, via ../docker-compose.yml
 bash scripts/preflight.sh   # verify every port answers (see below)
 
 # A notification profile, or the pipeline runs to completion and announces
 # nothing — which looks exactly like a broken notifier. The id must match what
 # the UI sends as X-User-Id.
-docker compose exec api smarttender-admin seed --user operator --email you@example.com
+docker compose -f ../docker-compose.yml exec api \n    smarttender-admin seed --user operator --email you@example.com
 ```
 
 **Why `preflight` matters.** Docker Desktop on Windows forwards published ports

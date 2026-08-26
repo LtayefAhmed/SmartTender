@@ -29,6 +29,7 @@ blocks and never loses work". The settings that matter:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from celery import Celery, signals
@@ -40,7 +41,35 @@ from app.workers.queues import DEFAULT_QUEUE, QUEUES, TASK_ROUTES
 
 logger = get_logger(__name__)
 
-__all__ = ["MAINTENANCE_SCHEDULE", "celery_app", "create_celery_app"]
+__all__ = [
+    "AI_READY_MARKER",
+    "MAINTENANCE_SCHEDULE",
+    "TASK_PRIORITY",
+    "celery_app",
+    "create_celery_app",
+]
+
+#: Touched by the model-bound worker once the encoder is genuinely in memory,
+#: and removed before it is. The container healthcheck tests for it because
+#: `celery inspect ping` answers long before the 470 MB model has loaded — a
+#: worker with a missing or corrupt model would otherwise report healthy while
+#: every match request failed.
+#: The path is absolute and container-local by design: the healthcheck runs
+#: in the same container, and nothing outside it should be able to vouch.
+AI_READY_MARKER = Path("/tmp/smarttender-ai-ready")
+
+#: The `--hostname` prefix compose gives the model-bound worker. Matching on it
+#: keeps the preload where it belongs: loading the encoder into `worker-support`
+#: would put a second copy of those 470 MB on a host that has already fallen
+#: over once for exactly that reason.
+_AI_NODE_PREFIX = "ai@"
+
+#: Named because Redis priorities run backwards — 0 is served first — and an
+#: integer written inline at a call site reads as the opposite of what it does.
+#:
+#: `interactive` is anything a person is waiting on with a spinner open.
+#: `batch` is everything else: reindexing, backfills, scheduled sweeps.
+TASK_PRIORITY = {"interactive": 0, "batch": 5}
 
 #: Always-on reconciliation loops. Cadences are chosen so that each task's cost
 #: is negligible relative to its interval, and so that the slowest detection
@@ -129,6 +158,7 @@ def create_celery_app() -> Celery:
             "app.workers.tasks.cvs",
             "app.workers.tasks.indexing",
             "app.workers.tasks.matching",
+            "app.workers.tasks.profiles",
             "app.workers.tasks.notifications",
             "app.workers.tasks.maintenance",
         ],
@@ -162,7 +192,21 @@ def create_celery_app() -> Celery:
         task_routes=TASK_ROUTES,
         task_create_missing_queues=True,
         # --- broker ---------------------------------------------------
+        # Interactive work must not queue behind a batch. `worker-ai` runs at
+        # concurrency 1 — one process, one copy of the 470 MB encoder — so a
+        # recruiter's search sat behind 344 reindexing jobs and timed out after
+        # ninety seconds. Redis has no native priorities; Celery emulates them
+        # with one list per step, and this is what turns that on.
+        #
+        # Lower number = served first, which is the opposite of most systems
+        # and the reason `TASK_PRIORITY` below names its values rather than
+        # scattering integers through the code.
+        task_queue_max_priority=9,
+        task_default_priority=TASK_PRIORITY["batch"],
         broker_transport_options={
+            "queue_order_strategy": "priority",
+            "priority_steps": list(range(10)),
+            "sep": "",
             # Longer than the longest task, or Redis redelivers a running job.
             "visibility_timeout": worker.scraping_time_limit_seconds + 600,
             "max_retries": 3,
@@ -201,6 +245,57 @@ def _setup_logging(**_kwargs: Any) -> None:
     configure_logging(force=True)
 
 
+def _is_ai_node(hostname: str | None) -> bool:
+    return bool(hostname) and str(hostname).startswith(_AI_NODE_PREFIX)
+
+
+def _clear_ready_marker() -> None:
+    """Drop a marker left by a previous run.
+
+    `docker restart` keeps the container's filesystem, so without this the
+    marker written before the restart would still be there while the new
+    process is still loading — the healthcheck would pass on stale evidence,
+    which is the failure it exists to catch.
+    """
+    try:
+        AI_READY_MARKER.unlink(missing_ok=True)
+    except OSError as exc:  # a read-only or Windows-local /tmp: not fatal
+        logger.debug("worker.ready_marker_unclearable", error=str(exc))
+
+
+def _preload_encoder(hostname: str | None) -> None:
+    """Load the embedding model at boot, then vouch for it.
+
+    Two things are bought here for one model load. The healthcheck gets
+    something real to test — the marker only appears after the ONNX graph is in
+    memory — and the first search of the day stops paying the load cost while a
+    recruiter watches a spinner.
+
+    A failure is logged and leaves the marker absent, which is the honest
+    outcome: the container reports unhealthy rather than accepting matching
+    work it cannot do.
+    """
+    try:
+        from app.services.embeddings import get_embedder
+
+        embedder = get_embedder()
+        dimensions = embedder.dimensions
+        AI_READY_MARKER.write_text(f"{hostname or ''}:{dimensions}\n", encoding="utf-8")
+        logger.info("worker.encoder_preloaded", hostname=hostname, dimensions=dimensions)
+    except Exception as exc:
+        # Deliberately not re-raised: a worker that cannot embed should still
+        # start, log why, and fail its healthcheck. Crashing at boot would put
+        # the container in a restart loop and bury the reason.
+        logger.error("worker.encoder_preload_failed", hostname=hostname, error=str(exc))
+
+
+@signals.celeryd_init.connect
+def _on_celeryd_init(sender: Any = None, **_kwargs: Any) -> None:
+    """Earliest hook there is — before the worker accepts anything."""
+    if _is_ai_node(sender):
+        _clear_ready_marker()
+
+
 @signals.worker_ready.connect
 def _on_worker_ready(sender: Any = None, **_kwargs: Any) -> None:
     """Reconcile the source registry once the worker is up.
@@ -210,6 +305,9 @@ def _on_worker_ready(sender: Any = None, **_kwargs: Any) -> None:
     the worker out of rotation.
     """
     configure_logging()
+    hostname = getattr(sender, "hostname", None)
+    if _is_ai_node(hostname):
+        _preload_encoder(hostname)
     try:
         from app.db.session import session_scope
         from app.services.sources import sync_sources
@@ -251,5 +349,8 @@ def _task_failure(
 def _worker_shutdown(**_kwargs: Any) -> None:
     from app.db.session import dispose_sync_engine
 
+    # Withdraw the vouch before the model goes away, so a worker on its way
+    # down never looks ready.
+    _clear_ready_marker()
     dispose_sync_engine()
     logger.info("worker.shutting_down")

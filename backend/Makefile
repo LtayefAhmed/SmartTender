@@ -104,18 +104,27 @@ health: ## Probe infrastructure dependencies
 	$(BIN)/smarttender-admin health
 
 # --- docker ------------------------------------------------------------------
+# The compose file lives at the repository root, because it builds both
+# ./backend and ./frontend. `-f` also sets the project directory, so the root
+# `.env` is picked up and the project is named `smarttender`.
+COMPOSE := docker compose -f ../docker-compose.yml
+
 .PHONY: up
 up: ## Start the full stack
-	docker compose up -d --build
+	$(COMPOSE) up -d --build
+
+.PHONY: up-all
+up-all: ## Start the stack plus Flower, Prometheus and Grafana
+	$(COMPOSE) --profile tools --profile monitoring up -d --build
 
 .PHONY: down
 down: ## Stop the stack
-	docker compose down
+	$(COMPOSE) --profile tools --profile monitoring down
 
 .PHONY: clean-volumes
 clean-volumes: ## Stop the stack AND DELETE ALL DATA
-	docker compose down -v
+	$(COMPOSE) --profile tools --profile monitoring down -v
 
 .PHONY: logs
 logs: ## Tail the stack logs
-	docker compose logs -f --tail=100
+	$(COMPOSE) logs -f --tail=100

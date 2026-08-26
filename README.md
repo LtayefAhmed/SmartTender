@@ -27,7 +27,7 @@ laquelle manque.
 
 | Ce qui manque | Pourquoi | Comment l'obtenir |
 |---|---|---|
-| `backend/.env` | contient des identifiants réels | `cp .env.example .env`, puis compléter |
+| `.env` (racine) | contient des identifiants réels | `cp .env.example .env`, puis compléter |
 | `backend/models/` | **536 Mo** de poids ONNX — des binaires de cette taille n'ont rien à faire dans un historique git | `python scripts/fetch_models.py` |
 | `backend/certs/j360-session.json` | c'est un identifiant, au même titre qu'un mot de passe | `python -m app.cli capture-login j360` |
 | la clé Mistral | secret par nature | à coller dans `.env` |
@@ -61,9 +61,12 @@ d'embedding 1,5 de plus.
 ### 2. Configuration
 
 ```bash
-cd backend
 cp .env.example .env
 ```
+
+Le fichier vit à la **racine**, à côté de `docker-compose.yml` : Compose lit le
+`.env` du dossier de son fichier, et l'application le cherche aussi bien dans
+`backend/` que dans le dossier parent.
 
 Les valeurs par défaut suffisent pour tout faire tourner. Deux sont
 facultatives et changent ce que la plateforme sait faire :
@@ -98,19 +101,28 @@ normalement ; seul le rapprochement CV / appel d'offres est indisponible.
 ### 4. Lancer la pile
 
 ```bash
-docker compose up -d
+docker compose up -d          # depuis la racine du dépôt
 ```
 
-Quinze conteneurs démarrent :
+Treize conteneurs démarrent :
 
 | Rôle | Services |
 |---|---|
 | Données | PostgreSQL, Redis, MinIO, Qdrant |
 | Application | API, frontend |
 | Traitement | `worker-pipeline`, `worker-scraping`, `worker-support`, `worker-ai`, `beat` |
-| Observation | Flower, Prometheus, Grafana, Mailpit |
+| Utilitaires | Mailpit |
 
-Les migrations s'appliquent automatiquement.
+Les migrations s'appliquent automatiquement. `migrate` finit en `Exited (0)` :
+c'est un travail ponctuel, pas un service tombé.
+
+Trois services sont **facultatifs** et restent arrêtés par défaut — environ
+215 Mio qu'on ne paie que lorsqu'on diagnostique quelque chose :
+
+```bash
+docker compose --profile monitoring up -d   # Prometheus + Grafana
+docker compose --profile tools up -d        # Flower
+```
 
 `worker-ai` tourne délibérément à **concurrence 1**. Celery fonctionne par
 préfork : chaque processus charge sa propre copie du modèle de 470 Mo. Routé
@@ -241,7 +253,6 @@ premier quota dépassé.
 ### Reconstruire après modification
 
 ```bash
-cd backend
 docker compose build api worker-pipeline worker-scraping worker-support worker-ai
 docker compose up -d
 ```

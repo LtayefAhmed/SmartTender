@@ -47,6 +47,7 @@ def extract_cv_text(self: PipelineTask, cv_id: str) -> dict[str, Any]:
     imported, listed and downloadable — it simply cannot be matched, and the
     row says so instead of pretending otherwise.
     """
+    from app.services.cv_criteria import extract_criteria
     from app.services.extraction import clean_extracted_text, get_extractor
     from app.services.profiles import extract_identity
     from app.services.storage import get_storage
@@ -97,6 +98,12 @@ def extract_cv_text(self: PipelineTask, cv_id: str) -> dict[str, Any]:
             row.display_name = identity.name
             row.headline = identity.headline
             row.identity_source = identity.source
+
+            # Read here rather than at search time: a recruiter filtering over
+            # several hundred profiles cannot wait for several hundred
+            # documents to be parsed, and the answer does not change between
+            # two searches.
+            row.criteria = extract_criteria(text).as_dict()
             outcome.update(
                 identity=identity.source,
                 label=identity.label[:60],

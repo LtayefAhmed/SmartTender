@@ -18,7 +18,7 @@ with their job title in capitals, and the folder name is lost on import.
 
 Run inside the AI worker::
 
-    docker compose exec -T worker-ai python scripts/evaluer_matching.py
+    docker compose -f ../docker-compose.yml exec -T worker-ai \n        python scripts/evaluer_matching.py
 """
 
 from __future__ import annotations

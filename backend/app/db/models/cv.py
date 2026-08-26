@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy import Index, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, JSONType, TimestampMixin
 
 __all__ = ["CV"]
 
@@ -81,6 +81,23 @@ class CV(Base, TimestampMixin):
     #: label. Lets a screen style a real name differently, and lets a later
     #: refinement pass target only the weak ones.
     identity_source: Mapped[str | None] = mapped_column(String(16))
+
+    #: Filterable evidence read from the text at extraction time: technologies,
+    #: languages, education level, certifications.
+    #:
+    #: Stored rather than recomputed because a recruiter filtering over several
+    #: hundred profiles cannot wait for several hundred documents to be parsed,
+    #: and the answer does not change between two searches.
+    #:
+    #: JSONB rather than five columns: it is read as a whole, written as a
+    #: whole, and adding a sixth criterion should not be a migration.
+    #: ``JSONType`` rather than raw ``JSONB``: the project already carries a
+    #: portable variant that degrades to ``JSON`` on SQLite, which is what the
+    #: test suite runs on. Importing the PostgreSQL type directly compiled
+    #: fine and broke 149 tests at runtime.
+    criteria: Mapped[dict[str, Any]] = mapped_column(
+        JSONType, nullable=False, server_default="{}", default=dict
+    )
 
     #: The readable text, and how it was obtained. A stored CV nothing has read
     #: is a file, not a profile: matching compares requirements against skills,

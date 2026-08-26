@@ -39,7 +39,11 @@ groups:
     - ".NET"
     - "TypeScript"
     - "JavaScript"
-    - "Go"
+    # The bare token "Go" is deliberately absent: it is one of the commonest
+    # verbs in English and no disqualifying pattern covers "go further", "go
+    # live", "go beyond". Same remedy as "SAGE" in the scoring profile — drop
+    # the ambiguous token, keep the unmistakable one.
+    - "Golang"
     - "Kotlin"
     - "Swift"
     - "COBOL"

@@ -21,7 +21,16 @@ param([switch]$Check)
 
 Set-Location (Join-Path $PSScriptRoot "..")
 
+# Le fichier compose vit à la racine du dépôt : il construit ./backend ET
+# ./frontend, il ne peut donc pas tenir dans l'un des deux.
+$composeFile = Join-Path $PSScriptRoot "..\..\docker-compose.yml"
+$composeArgs = @("-f", $composeFile, "--profile", "tools", "--profile", "monitoring")
+
 # service, port, chemin, libellé — c'est l'URL qui compte, pas l'état du conteneur.
+# Flower, Prometheus et Grafana sont derrière des profils compose et ne tournent
+# généralement pas ; une cible dont le conteneur est absent est signalée comme
+# telle et jamais comptée en échec. Signaler un service optionnel comme tombé,
+# c'est la façon la plus sûre qu'une checklist cesse d'être lue.
 $targets = @(
     @{ Service = "frontend";   Port = 3000; Path = "/";            Label = "Interface" },
     @{ Service = "frontend";   Port = 3000; Path = "/api/health";  Label = "Proxy API (nginx -> api)" },
@@ -50,10 +59,21 @@ function Test-Endpoint {
     }
 }
 
+function Test-ServiceRunning {
+    param([string]$Service)
+    $id = & docker compose @composeArgs ps -q $Service 2>$null
+    return -not [string]::IsNullOrWhiteSpace($id)
+}
+
 $failed = 0
 $repaired = 0
 
 foreach ($t in $targets) {
+    if (-not (Test-ServiceRunning -Service $t.Service)) {
+        Write-Host ("  --    {0,-28} hors profil, non démarré" -f $t.Label) -ForegroundColor DarkGray
+        continue
+    }
+
     if (Test-Endpoint -Port $t.Port -Path $t.Path) {
         Write-Host ("  OK    {0,-28} http://localhost:{1}" -f $t.Label, $t.Port) -ForegroundColor Green
         continue
@@ -66,14 +86,14 @@ foreach ($t in $targets) {
     }
 
     Write-Host ("  ..    {0,-28} port {1} muet, redémarrage de '{2}'" -f $t.Label, $t.Port, $t.Service) -ForegroundColor Yellow
-    docker compose restart $t.Service *>$null
+    docker compose @composeArgs restart $t.Service *>$null
     Start-Sleep -Seconds 8
 
     if (Test-Endpoint -Port $t.Port -Path $t.Path) {
         Write-Host ("  OK    {0,-28} réparé" -f $t.Label) -ForegroundColor Green
         $repaired++
     } else {
-        Write-Host ("  KO    {0,-28} toujours muet — voir : docker compose logs {1}" -f $t.Label, $t.Service) -ForegroundColor Red
+        Write-Host ("  KO    {0,-28} toujours muet — voir : docker compose -f ..\..\docker-compose.yml logs {1}" -f $t.Label, $t.Service) -ForegroundColor Red
         $failed++
     }
 }

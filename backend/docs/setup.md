@@ -55,11 +55,11 @@ curl -s -H "X-API-Key: dev-local-key" localhost:8000/sources/registry | python -
 Better for development: fast reload and a real debugger.
 
 ```bash
-cd backend
-cp .env.example .env
+cp .env.example .env   # at the repository root, next to docker-compose.yml
 
+cd backend
 # infrastructure only
-docker compose up -d postgres redis minio mailpit
+docker compose -f ../docker-compose.yml up -d postgres redis minio mailpit
 
 make install
 make migrate

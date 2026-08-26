@@ -1,0 +1,468 @@
+# =============================================================================
+# SmartTender — pile complète de développement / démonstration.
+#
+# Ce fichier vit à la RACINE du dépôt, et pas dans `backend/`, parce qu'il
+# orchestre les deux composants : il construit `./backend` et `./frontend`. Un
+# fichier logé dans un composant mais qui remonte vers son parent donne un nom
+# de projet trompeur — la pile s'affichait sous le nom « backend », ce qui
+# laisse croire que le frontend tourne dans le conteneur backend. Il n'y a
+# jamais eu qu'un conteneur par composant ; c'était le rangement qui mentait.
+#
+# Le découpage des workers est la partie intéressante. Plutôt qu'un worker
+# unique consommant toutes les files, chaque service regroupe les tâches qui
+# partagent un *profil de ressources* : réseau lent pour le scraping, CPU pour
+# le pipeline, mémoire pour l'IA. Un portail qui se fige n'occupe que des
+# créneaux de scraping, et les imports continuent de passer par le parsing.
+#
+# Monter une file indépendamment :
+#     docker compose up -d --scale worker-scraping=4
+#
+# Services optionnels (arrêtés par défaut) :
+#     docker compose --profile monitoring up -d   # Prometheus + Grafana
+#     docker compose --profile tools up -d        # Flower
+# =============================================================================
+
+# Sans ceci, Docker nomme le projet d'après le dossier du fichier.
+name: smarttender
+
+x-app-env: &app-env
+  SMARTTENDER_ENV: development
+  SMARTTENDER_LOG_FORMAT: json
+  SMARTTENDER_LOG_LEVEL: INFO
+  SMARTTENDER_DB__HOST: postgres
+  SMARTTENDER_DB__USER: smarttender
+  SMARTTENDER_DB__PASSWORD: smarttender
+  SMARTTENDER_DB__NAME: smarttender
+  SMARTTENDER_REDIS__HOST: redis
+  SMARTTENDER_VECTOR__URL: http://qdrant:6333
+  # Mistral. Lu depuis le `.env` de la racine plutôt qu'écrit ici : la clé est
+  # un secret et ce fichier est versionné. Absente, chaque étape LLM est sautée
+  # et la plateforme se comporte exactement comme avant — la passe est une
+  # amélioration, jamais une dépendance.
+  SMARTTENDER_LLM__MISTRAL_API_KEY: "${SMARTTENDER_LLM__MISTRAL_API_KEY:-}"
+  # tenders | tenders_and_cvs | off. Applique la frontière de souveraineté : un
+  # avis est public, un CV est une donnée personnelle. Par défaut du côté sûr,
+  # donc un déploiement qui n'a rien décidé n'envoie aucun CV.
+  SMARTTENDER_LLM__SCOPE: "${SMARTTENDER_LLM__SCOPE:-tenders}"
+  SMARTTENDER_LLM__MODEL: "${SMARTTENDER_LLM__MODEL:-mistral-small-latest}"
+  SMARTTENDER_LLM__TIMEOUT_SECONDS: "${SMARTTENDER_LLM__TIMEOUT_SECONDS:-30}"
+  SMARTTENDER_LLM__MAX_INPUT_CHARS: "${SMARTTENDER_LLM__MAX_INPUT_CHARS:-12000}"
+  SMARTTENDER_STORAGE__ENDPOINT: minio:9000
+  # Où un NAVIGATEUR peut joindre MinIO. Les liens présignés sont construits
+  # avec cet hôte ; sans lui ils portent le nom du conteneur et échouent au
+  # seul endroit où on clique dessus.
+  SMARTTENDER_STORAGE__PUBLIC_ENDPOINT: "${SMARTTENDER_STORAGE__PUBLIC_ENDPOINT:-localhost:9000}"
+  SMARTTENDER_STORAGE__ACCESS_KEY: minioadmin
+  SMARTTENDER_STORAGE__SECRET_KEY: minioadmin
+  SMARTTENDER_STORAGE__SECURE: "false"
+  # Désactivé pour le développement local uniquement. MinIO mono-nœud n'a pas de
+  # KMS, et SSE-S3 sans KMS est refusé avec `NotImplemented` — chaque document
+  # échoue alors à s'archiver pendant que l'ingestion continue, ce qui est un
+  # trou silencieux désagréable.
+  # LA PRODUCTION DOIT configurer un KMS et laisser ceci à true (défaut du code).
+  SMARTTENDER_STORAGE__SERVER_SIDE_ENCRYPTION: "${SMARTTENDER_STORAGE__SERVER_SIDE_ENCRYPTION:-false}"
+  SMARTTENDER_API__API_KEYS: '["dev-local-key"]'
+  SMARTTENDER_NOTIFICATIONS__EMAIL_ENABLED: "true"
+  SMARTTENDER_NOTIFICATIONS__SMTP_HOST: mailpit
+  SMARTTENDER_NOTIFICATIONS__SMTP_PORT: "1025"
+
+  # Extraction documentaire. Tesseract est installé dans l'image et sur le PATH.
+  SMARTTENDER_EXTRACTION__ENABLED: "${SMARTTENDER_EXTRACTION__ENABLED:-true}"
+  SMARTTENDER_EXTRACTION__OCR_ENABLED: "${SMARTTENDER_EXTRACTION__OCR_ENABLED:-true}"
+  SMARTTENDER_EXTRACTION__OCR_LANGUAGES: "${SMARTTENDER_EXTRACTION__OCR_LANGUAGES:-fra+eng+ara}"
+
+  # --- identifiants des connecteurs -----------------------------------------
+  # Interpolés depuis `.env`, que Compose lit automatiquement dans le dossier du
+  # fichier — donc la racine du dépôt. Coder des chaînes vides ici écraserait
+  # silencieusement de vrais identifiants et laisserait chaque source payante
+  # signaler `credentials_missing` sans cause visible.
+  # Les défauts `:-` gardent la pile démarrable quand ils sont absents.
+  SMARTTENDER_CONNECTOR_J360_USERNAME: "${SMARTTENDER_CONNECTOR_J360_USERNAME:-}"
+  SMARTTENDER_CONNECTOR_J360_PASSWORD: "${SMARTTENDER_CONNECTOR_J360_PASSWORD:-}"
+  SMARTTENDER_CONNECTOR_J360_API_KEY: "${SMARTTENDER_CONNECTOR_J360_API_KEY:-}"
+  # TLS mutuel TUNEPS. Les chemins doivent être visibles *dans* le conteneur —
+  # voir le montage `certs` plus bas.
+  SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH: "${SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_KEY_PATH: "${SMARTTENDER_CONNECTOR_TUNEPS_KEY_PATH:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_KEY_PASSWORD: "${SMARTTENDER_CONNECTOR_TUNEPS_KEY_PASSWORD:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_USERNAME: "${SMARTTENDER_CONNECTOR_TUNEPS_USERNAME:-}"
+  SMARTTENDER_CONNECTOR_TUNEPS_PASSWORD: "${SMARTTENDER_CONNECTOR_TUNEPS_PASSWORD:-}"
+
+# Le HEALTHCHECK de l'image interroge /health/live, que seule l'API sert. Les
+# workers et Beat ne font tourner aucun serveur HTTP : ils rapporteraient
+# « unhealthy » à vie et un orchestrateur les redémarrerait en boucle. Chaque
+# service non-API le remplace.
+x-worker-healthcheck: &worker-healthcheck
+  # `inspect ping` SANS destination est un broadcast : il réussit si *n'importe
+  # quel* worker répond. Mesuré depuis worker-ai, il recevait quatre pongs — un
+  # worker figé restait donc « healthy » grâce à ses voisins, ce qui est
+  # exactement l'inverse de ce qu'un healthcheck doit faire.
+  #
+  # `-d` le restreint à son propre nœud. `CELERY_NODE` porte le préfixe passé à
+  # `--hostname`, et `$$(hostname)` fournit le suffixe que `%h` développe.
+  test:
+    - CMD-SHELL
+    - celery -A app.workers.celery_app:celery_app inspect ping -d "$${CELERY_NODE}@$$(hostname)" -t 10 | grep -q pong
+  interval: 60s
+  timeout: 20s
+  retries: 3
+  start_period: 45s
+
+x-app-base: &app-base
+  build:
+    context: ./backend
+    target: runtime
+  image: smarttender/ingestion:local
+  environment: *app-env
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    minio: { condition: service_healthy }
+  volumes:
+    # La configuration est montée : corriger un sélecteur = une édition et un
+    # `POST /sources/sync`, sans reconstruction.
+    - ./backend/config:/app/config:ro
+    # Certificats TUNTRUST. Déposer les fichiers PEM dans ./backend/certs
+    # (git-ignoré) et pointer SMARTTENDER_CONNECTOR_TUNEPS_CERT_PATH sur
+    # /app/certs/<fichier>.pem.
+    - ./backend/certs:/app/certs:ro
+    # Poids du modèle d'embeddings — 536 Mo d'ONNX. Montés plutôt qu'intégrés à
+    # l'image : ce sont de gros binaires qui évoluent à leur propre rythme, ils
+    # sont git-ignorés, et les copier ferait déplacer un demi-gigaoctet à chaque
+    # reconstruction pour une correction d'une ligne.
+    # Les récupérer une fois : python backend/scripts/fetch_models.py
+    - ./backend/models:/app/models:ro
+  restart: unless-stopped
+
+services:
+  # --- infrastructure ------------------------------------------------------
+  # Toutes les images sont ÉPINGLÉES. `latest` rend une pile irreproductible :
+  # un collègue qui clone le mois prochain reçoit une version majeure
+  # différente, et le bug qui en découle est introuvable chez celui qui l'a
+  # écrite. Les versions ci-dessous sont celles effectivement validées ici.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: smarttender
+      POSTGRES_PASSWORD: smarttender
+      POSTGRES_DB: smarttender
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smarttender -d smarttender"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Mesuré au repos : 65 Mio. La marge couvre les tris et la construction
+    # d'index.
+    mem_limit: 1g
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Broker persistant : une tâche de scraping non acquittée doit survivre à un
+    # redémarrage.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Mesuré : 12 Mio. `noeviction` fait que Redis refuse les écritures plutôt
+    # que de jeter des tâches — une file pleine devient une erreur visible, pas
+    # une perte silencieuse.
+    mem_limit: 512m
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"   # console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Mesuré : 155 Mio.
+    mem_limit: 1g
+    restart: unless-stopped
+
+  # Index vectoriel du rapprochement. Séparé de PostgreSQL à dessein : une
+  # recherche ANN sur quelques centaines de milliers de passages est un profil
+  # d'accès différent des requêtes relationnelles du reste de la plateforme, et
+  # les mélanger fait qu'un balayage lent affame l'autre.
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    ports:
+      - "6333:6333"   # REST + tableau de bord web sur /dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      # L'image ne porte ni curl ni wget ; /dev/tcp de bash est toujours là.
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Mesuré : 110 Mio pour ~6 200 passages. La marge laisse la place à un
+    # corpus dix fois plus grand.
+    mem_limit: 1g
+    restart: unless-stopped
+
+  # Reste dans la pile par défaut, contrairement aux autres outils : les
+  # notifications sont activées et pointent sur lui. L'écarter ferait échouer
+  # `flush_pending_notifications` toutes les dix minutes, et une pile qui
+  # journalise une erreur récurrente au démarrage donne à un nouvel arrivant
+  # l'impression qu'elle est cassée. 25 Mio, c'est le prix du silence.
+  mailpit:
+    image: axllent/mailpit:v1.30.6
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # UI web — c'est là qu'on lit les emails de notification
+    mem_limit: 256m
+    restart: unless-stopped
+
+  # --- migration ponctuelle ------------------------------------------------
+  # `restart: "no"` est explicite : ce conteneur DOIT finir en `Exited (0)`.
+  # Sans cette ligne il hériterait de `unless-stopped` et rejouerait
+  # `alembic upgrade` en boucle. Le voir « Exited » dans Docker Desktop est le
+  # comportement attendu, pas une panne.
+  migrate:
+    <<: *app-base
+    command: ["alembic", "upgrade", "head"]
+    mem_limit: 512m
+    restart: "no"
+
+  # --- application ---------------------------------------------------------
+  api:
+    <<: *app-base
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    # Mesuré : 106 Mio. L'API délègue tout le travail lourd aux workers.
+    mem_limit: 768m
+
+  # Tableau de bord opérateur. Bundle React statique servi par nginx, qui relaie
+  # aussi /api vers le backend pour que le navigateur reste same-origin (pas de
+  # CORS). Conteneur à part entière, avec sa propre image et son Dockerfile.
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: smarttender/frontend:local
+    environment:
+      SMARTTENDER_UI_API_BASE: /api
+      SMARTTENDER_UI_API_KEY: dev-local-key
+    ports: ["3000:80"]
+    depends_on:
+      api: { condition: service_healthy }
+    # Mesuré : 6 Mio. nginx servant des fichiers statiques.
+    mem_limit: 128m
+    restart: unless-stopped
+
+  # --- workers -------------------------------------------------------------
+  # Chaque service porte une limite mémoire. C'est l'absence de ces lignes qui a
+  # fait tomber la machine : un worker qui gonflait emportait l'hôte au lieu
+  # d'être tué seul. Avec `mem_limit`, l'OOM killer ne frappe qu'un conteneur ;
+  # `task_reject_on_worker_lost` remet sa tâche en file et `restart:
+  # unless-stopped` le relance. L'incident devient une tâche rejouée.
+
+  # Lié au réseau, long, en rafales. Faible concurrence : le goulot est la
+  # politesse envers les portails, pas le CPU.
+  #
+  # Utilise l'image navigateur, car TUNEPS (dynamique) et J360 (connexion par
+  # navigateur) passent tous deux par Playwright. La construire une fois :
+  #     docker build --target runtime-browser -t smarttender/ingestion:browser ./backend
+  worker-scraping:
+    <<: *app-base
+    image: smarttender/ingestion:browser
+    build:
+      context: ./backend
+      target: runtime-browser
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "scraping", "--concurrency", "2",
+       "--hostname", "scraping@%h", "--loglevel", "INFO"]
+    environment:
+      <<: *app-env
+      CELERY_NODE: scraping
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *worker-healthcheck
+    # Mesuré : 298 Mio. La marge est pour Chromium, qui n'était pas ouvert au
+    # moment de la mesure.
+    mem_limit: 1536m
+
+  # Travail de pipeline lié au CPU. Concurrence plus élevée, et délibérément
+  # séparé pour qu'un portail bloqué ne puisse jamais l'affamer.
+  #
+  # La concurrence reste à 8. Mesuré au repos : 436 Mio pour huit processus de
+  # parsing — ce n'est pas la concurrence qui coûte, c'est ce que chaque
+  # processus charge. Les 90 % de CPU observés venaient de l'indexation, qui
+  # tourne sur worker-ai à concurrence 1. Baisser ce nombre diviserait le débit
+  # d'extraction par deux pour corriger un problème venu d'ailleurs.
+  worker-pipeline:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "parsing,scoring,default", "--concurrency", "8",
+       "--hostname", "pipeline@%h", "--loglevel", "INFO"]
+    environment:
+      <<: *app-env
+      CELERY_NODE: pipeline
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *worker-healthcheck
+    # Mesuré au repos : 436 Mio. La marge couvre huit rendus PDF simultanés.
+    mem_limit: 2g
+
+  # Travail lié au modèle : embeddings et indexation. Concurrence 1, et ce
+  # nombre est toute la raison d'être de ce service. Celery préfork, donc chaque
+  # processus charge sa propre copie de l'encodeur de 470 Mo — routé vers une
+  # file servie à concurrence 8, il a mis 3,7 Go de poids identiques en mémoire
+  # et fait tomber l'hôte. Un processus, un modèle, le travail fait la queue.
+  worker-ai:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "ai", "--concurrency", "1",
+       "--hostname", "ai@%h", "--loglevel", "INFO"]
+    environment:
+      <<: *app-env
+      CELERY_NODE: ai
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      # Répondre `pong` ne prouve pas que ce worker sait travailler : Celery
+      # répond avant que l'encodeur soit chargé, et un modèle absent ou corrompu
+      # laisserait le service « healthy » pendant que chaque rapprochement
+      # échoue. Le worker écrit ce marqueur une fois l'encodeur réellement en
+      # mémoire — voir `_on_worker_ready` dans app/workers/celery_app.py.
+      test:
+        - CMD-SHELL
+        - test -f /tmp/smarttender-ai-ready && celery -A app.workers.celery_app:celery_app inspect ping -d "$${CELERY_NODE}@$$(hostname)" -t 10 | grep -q pong
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      # Plus long que les autres : le démarrage inclut le chargement du modèle.
+      start_period: 180s
+    # Mesuré : 1,028 Gio, modèle chargé. La marge couvre les lots d'encodage.
+    mem_limit: 2g
+
+  # Lié aux E/S et à faible volume ; porte aussi les boucles d'entretien.
+  #
+  # L'OCR partage ce conteneur avec les notifications. Séparer les deux se
+  # défend — l'OCR est gourmand, les notifications doivent rester réactives —
+  # mais coûte un conteneur de plus sur une machine de 7,76 Gio, et les
+  # priorités Redis règlent déjà l'attente qui posait problème. À refaire quand
+  # la plateforme quittera un portable.
+  worker-support:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+       "--queues", "notifications,maintenance,ocr", "--concurrency", "4",
+       "--hostname", "support@%h", "--loglevel", "INFO"]
+    environment:
+      <<: *app-env
+      CELERY_NODE: support
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *worker-healthcheck
+    # Mesuré : 481 Mio. L'OCR rastérise des pages, d'où la marge.
+    mem_limit: 1536m
+
+  # EXACTEMENT UNE instance de Beat. Deux dédoubleraient chaque planification.
+  beat:
+    <<: *app-base
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "beat", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    # Beat n'expose aucune surface de vivacité interrogeable — c'est un
+    # publieur, pas un consommateur, il n'y a rien à pinguer. Un Beat mort se
+    # voit à des planifications qui cessent de se déclencher, ce sur quoi
+    # `check_connector_health` alerte déjà.
+    healthcheck:
+      disable: true
+    # Mesuré : 84 Mio.
+    mem_limit: 384m
+    deploy:
+      replicas: 1
+
+  # --- outils (profil `tools`) ---------------------------------------------
+  #     docker compose --profile tools up -d
+  flower:
+    <<: *app-base
+    profiles: ["tools"]
+    command:
+      ["celery", "-A", "app.workers.celery_app:celery_app", "flower",
+       "--port=5555", "--url_prefix=flower"]
+    ports: ["5555:5555"]
+    healthcheck:
+      # Sans cette ligne, Flower héritait du HEALTHCHECK de l'image, qui
+      # interroge `localhost:8000/health/live` — l'API. Flower sert sur 5555 et
+      # ne répond jamais à cela : il restait « unhealthy » à vie alors qu'il
+      # fonctionnait. Le même piège que le ping en broadcast, dans l'autre sens.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5555/flower/healthcheck || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 384m
+
+  # --- observation (profil `monitoring`) -----------------------------------
+  # Derrière un profil : utile pour diagnostiquer, inutile au quotidien, et
+  # ~215 Mio de moins sur une machine où la pile a déjà manqué de mémoire.
+  #     docker compose --profile monitoring up -d
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    profiles: ["monitoring"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    ports: ["9090:9090"]
+    volumes:
+      - ./backend/deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # prometheus.yml y fait référence dans `rule_files` ; sans le montage,
+      # Prometheus refuse de démarrer.
+      - ./backend/deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    mem_limit: 512m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["3001:3000"]
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  redis-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:

@@ -69,6 +69,7 @@ TASK_ROUTES = {
     # memory and took the machine down.
     "app.workers.tasks.indexing.*": {"queue": "ai"},
     "app.workers.tasks.matching.*": {"queue": "ai"},
+    "app.workers.tasks.profiles.*": {"queue": "ai"},
     "app.workers.tasks.cvs.*": {"queue": "ocr"},
     "app.workers.tasks.notifications.*": {"queue": "notifications"},
     "app.workers.tasks.maintenance.*": {"queue": "maintenance"},

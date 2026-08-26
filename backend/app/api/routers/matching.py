@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import Principal, get_session, require_principal
 from app.core.logging import get_logger
 from app.db.models.tender import Tender
+from app.workers.celery_app import TASK_PRIORITY
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/tenders", tags=["matching"])
@@ -70,6 +71,7 @@ async def rank_candidates(
             "requirement_limit": requirements,
         },
         queue="ai",
+        priority=TASK_PRIORITY["interactive"],
     )
 
     try:

@@ -226,6 +226,7 @@ smarttender-admin dry-run <key> --pages 1                          # reproduce, 
 
 ```bash
 curl -s localhost:8000/metrics | grep queue_size
+# from the repository root, where docker-compose.yml lives
 docker compose up -d --scale worker-pipeline=6
 ```
 

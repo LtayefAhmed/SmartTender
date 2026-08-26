@@ -9,6 +9,7 @@ import { Tenders } from "./pages/Tenders";
 import { Scrape } from "./pages/Scrape";
 import { Upload } from "./pages/Upload";
 import { ImportCvs } from "./pages/ImportCvs";
+import { ProfileSearch } from "./pages/ProfileSearch";
 import { Schedules } from "./pages/Schedules";
 import { Sources } from "./pages/Sources";
 import { Notifications } from "./pages/Notifications";
@@ -31,6 +32,7 @@ const router = createBrowserRouter([
       { path: "scrape", element: <Scrape /> },
       { path: "upload", element: <Upload /> },
       { path: "matching/cv-import", element: <ImportCvs /> },
+      { path: "matching/recherche", element: <ProfileSearch /> },
       { path: "schedules", element: <Schedules /> },
       { path: "sources", element: <Sources /> },
       { path: "notifications", element: <Notifications /> },

@@ -1,0 +1,33 @@
+# =============================================================================
+# Racine du dépôt.
+#
+# `backend/.gitignore` ne couvre que `backend/`. Depuis que `docker-compose.yml`
+# et son `.env` vivent ici, ce fichier est ce qui empêche les identifiants J360
+# et la clé Mistral d'être committés.
+# =============================================================================
+
+# Secrets. `.env.example` ne contient que des marqueurs et reste versionné.
+.env
+.env.local
+.env.*.local
+
+# Certificats TUNTRUST / sessions de connecteurs.
+certs/
+*.pem
+*.pfx
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Outils
+.DS_Store
+Thumbs.db
+.idea/
+*.log

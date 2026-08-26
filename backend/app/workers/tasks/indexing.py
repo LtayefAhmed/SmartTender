@@ -164,7 +164,21 @@ def index_cv(self: PipelineTask, cv_id: str) -> dict[str, Any]:
                 return {"cv_id": cv_id, "status": "missing"}
             text = row.extracted_text or ""
             tenant = row.tenant_id
-            payload = {"filename": row.original_filename[:300]}
+            criteria = row.criteria or {}
+            # Carried into the payload so a hard filter runs *inside* Qdrant.
+            # Filtering after the search would mean reading profiles we are
+            # about to discard — the same argument that put tenant isolation
+            # in the query rather than in Python.
+            payload = {
+                "filename": row.original_filename[:300],
+                # The name a shortlist shows, resolved once here so a search
+                # needs no round trip per profile to print a row.
+                "label": (row.display_name or row.headline or row.original_filename)[:160],
+                "technologies": criteria.get("technologies") or [],
+                "languages": criteria.get("languages") or [],
+                "education_level": criteria.get("education_level"),
+                "certifications": criteria.get("certifications") or [],
+            }
 
         try:
             outcome = _index_document(

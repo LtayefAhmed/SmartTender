@@ -795,3 +795,80 @@ class TestMaintenanceTasks:
 
         assert purge_old_logs.run(retention_days=180)["purged"] == 1
         assert worker_db.query(ExecutionLog).count() == 1
+
+
+class TestTheModelWorkerVouchesForItself:
+    """A healthcheck that cannot fail is decoration.
+
+    `celery inspect ping` answers as soon as the worker's event loop is up —
+    long before the 470 MB encoder is in memory, and just as readily when the
+    model files are missing entirely. The container would report healthy while
+    every match request failed. So the model-bound worker writes a marker only
+    once the encoder has actually loaded, and the healthcheck tests for that.
+    """
+
+    @pytest.fixture
+    def marker(self, tmp_path, monkeypatch):
+        from app.workers import celery_app as module
+
+        path = tmp_path / "ai-ready"
+        monkeypatch.setattr(module, "AI_READY_MARKER", path)
+        return path
+
+    def test_only_the_model_worker_preloads(self):
+        """`worker-support` running the encoder would put a second copy of
+        those 470 MB on a host that has already fallen over for that reason."""
+        from app.workers.celery_app import _is_ai_node
+
+        assert _is_ai_node("ai@c0ffee") is True
+        assert _is_ai_node("support@c0ffee") is False
+        assert _is_ai_node("pipeline@c0ffee") is False
+        assert _is_ai_node(None) is False
+
+    def test_a_loaded_encoder_writes_the_marker(self, marker, monkeypatch):
+        from app.workers import celery_app as module
+
+        class _Encoder:
+            dimensions = 384
+
+        monkeypatch.setattr(
+            "app.services.embeddings.get_embedder", lambda: _Encoder(), raising=False
+        )
+        module._preload_encoder("ai@c0ffee")
+
+        assert marker.exists()
+        assert "384" in marker.read_text(encoding="utf-8")
+
+    def test_a_failed_load_leaves_no_marker_and_does_not_raise(self, marker, monkeypatch):
+        """Crashing at boot would put the container in a restart loop and bury
+        the reason. Starting, logging, and failing the healthcheck is the
+        honest outcome — the worker is up, and it says it cannot work."""
+        from app.workers import celery_app as module
+
+        def _explode():
+            raise RuntimeError("model file missing")
+
+        monkeypatch.setattr("app.services.embeddings.get_embedder", _explode, raising=False)
+        module._preload_encoder("ai@c0ffee")
+
+        assert not marker.exists()
+
+    def test_a_stale_marker_is_cleared_before_the_model_loads(self, marker):
+        """`docker restart` keeps the container filesystem. Without this, the
+        marker written before the restart would still be there while the new
+        process is still loading, and the healthcheck would pass on evidence
+        from the previous run."""
+        from app.workers import celery_app as module
+
+        marker.write_text("ai@old:384\n", encoding="utf-8")
+        module._on_celeryd_init(sender="ai@c0ffee")
+
+        assert not marker.exists()
+
+    def test_another_worker_never_touches_the_marker(self, marker):
+        from app.workers import celery_app as module
+
+        marker.write_text("ai@c0ffee:384\n", encoding="utf-8")
+        module._on_celeryd_init(sender="support@c0ffee")
+
+        assert marker.exists()

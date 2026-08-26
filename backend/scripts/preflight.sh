@@ -16,10 +16,18 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
+# The compose file lives at the repository root: it builds both ./backend and
+# ./frontend, so it cannot sit inside either of them.
+COMPOSE=(docker compose -f ../docker-compose.yml --profile tools --profile monitoring)
+
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
 # service:port:path:label — the URL is what matters, not the container state.
+# Flower, Prometheus and Grafana sit behind compose profiles and are usually
+# not running; a target whose container is absent is reported as such and never
+# counted as a failure. Reporting an optional service as down is how a checklist
+# stops being read.
 TARGETS=(
   "frontend:3000:/:Interface"
   "frontend:3000:/api/health:Proxy API (nginx -> api)"
@@ -31,6 +39,10 @@ TARGETS=(
   "grafana:3001:/api/health:Grafana"
 )
 
+running() {  # service -> 0 if a container exists for it
+  [ -n "$("${COMPOSE[@]}" ps -q "$1" 2>/dev/null)" ]
+}
+
 probe() {  # port path -> HTTP code ("000" = no response at all)
   curl -s -m 6 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$1$2" 2>/dev/null
 }
@@ -40,6 +52,13 @@ repaired=0
 
 for target in "${TARGETS[@]}"; do
   IFS=: read -r service port path label <<<"$target"
+
+  if ! running "$service"; then
+    printf "  [90m--[0m    %-28s hors profil, non démarré
+" "$label"
+    continue
+  fi
+
   code=$(probe "$port" "$path")
 
   # 2xx/3xx/404 all prove the port is bound and something is answering; only a
@@ -56,7 +75,7 @@ for target in "${TARGETS[@]}"; do
   fi
 
   printf "  \033[33m..\033[0m    %-28s port %s muet, redémarrage de '%s'\n" "$label" "$port" "$service"
-  docker compose restart "$service" >/dev/null 2>&1
+  "${COMPOSE[@]}" restart "$service" >/dev/null 2>&1
   sleep 8
   code=$(probe "$port" "$path")
 
@@ -64,7 +83,7 @@ for target in "${TARGETS[@]}"; do
     printf "  \033[32mOK\033[0m    %-28s réparé\n" "$label"
     repaired=$((repaired + 1))
   else
-    printf "  \033[31mKO\033[0m    %-28s toujours muet — voir: docker compose logs %s\n" "$label" "$service"
+    printf "  \033[31mKO\033[0m    %-28s toujours muet — voir: docker compose -f ../docker-compose.yml logs %s\n" "$label" "$service"
     failed=$((failed + 1))
   fi
 done

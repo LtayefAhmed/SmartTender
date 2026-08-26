@@ -2,9 +2,9 @@
 
 They are not in git — 536 MB of ONNX weights have no business in a repository,
 and ``backend/.gitignore`` excludes ``/models/`` for exactly that reason. They
-are also not baked into the Docker image: ``docker-compose.yml`` mounts
-``./models`` read-only, so fetching them once on the host serves every
-container.
+are also not baked into the Docker image: the root ``docker-compose.yml``
+mounts ``./backend/models`` read-only, so fetching them once on the host serves
+every container.
 
 Run from ``backend/``::
 
