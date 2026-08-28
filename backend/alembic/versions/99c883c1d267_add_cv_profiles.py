@@ -1,7 +1,7 @@
 """add cv_profiles
 
 Revision ID: 99c883c1d267
-Revises: 0d4e5f607182
+Revises: 0f0ac0e85b38
 Create Date: 2026-08-26 12:00:00.000000
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = '99c883c1d267'
-down_revision: str | None = '0d4e5f607182'
+down_revision: str | None = '0f0ac0e85b38'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

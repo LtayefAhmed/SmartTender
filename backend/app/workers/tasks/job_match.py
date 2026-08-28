@@ -1,12 +1,9 @@
-"""Ranking CVs against a recruiter's own job posting, not a scraped tender.
+﻿"""Ranking imported CVs against a recruiter's own job posting.
 
-Runs on the ``ai`` worker for the same reason ``matching.py`` does: the
-embedding model is 470 MB resident, and one worker at concurrency 1 must own
-the only copy. Mirrors ``rank_tender_candidates`` step for step, with two
-differences: the job text is supplied directly instead of loaded from a
-``Tender`` row, and the semantic top-N is further checked against the
-recruiter's structured filters (age, experience, certifications, ...) before
-being returned.
+This branch references the later vector-matching stack, but those service
+modules are not present. The task therefore uses the existing local services:
+read imported CV files from storage, extract text, and rank them with the
+configured similarity backend.
 """
 
 from __future__ import annotations
@@ -20,6 +17,12 @@ from app.workers.tasks.base import PipelineTask
 logger = get_logger(__name__)
 
 __all__ = ["rank_job_posting_candidates"]
+
+
+def _string_items(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 @celery_app.task(
@@ -37,17 +40,17 @@ def rank_job_posting_candidates(
     limit: int = 20,
     requirement_limit: int = 15,
 ) -> dict[str, Any]:
-    """Rank the tenant's CVs against a job posting supplied as raw text."""
-    from app.services.chunking import chunk_text
-    from app.services.cv_profile import JobMatchFilters, apply_filters, get_cv_profiles
-    from app.services.matching import (
-        MatchWeights,
-        Requirement,
-        extract_requirements,
-        match_tender,
-        required_technologies,
-    )
-    from app.services.refinement import structure_requirements
+    """Rank imported CVs against a job posting supplied as raw text."""
+    from sqlalchemy import select
+
+    from app.core.identity import normalize_text
+    from app.db.models.cv import CV
+    from app.db.session import session_scope
+    from app.services.extraction import get_extractor
+    from app.services.similarity import get_similarity_backend
+    from app.services.storage import get_storage
+
+    del self, requirement_limit
 
     with log_context(tenant=tenant):
         if not job_text.strip():
@@ -57,97 +60,103 @@ def rank_job_posting_candidates(
                 "candidates": [],
             }
 
-        chunks = chunk_text(job_text)
-        requirements = extract_requirements(
-            [(c.text, c.document, c.index, c.priority) for c in chunks],
-            limit=requirement_limit,
-        )
-        if not requirements:
-            # extract_requirements's length and obligation-language heuristics
-            # are tuned to pick the few substantive passages out of a large,
-            # mostly-boilerplate scraped dossier — reasonable when filtering a
-            # multi-page CCTP, wrong for a recruiter's own input. There is no
-            # boilerplate to filter here: whatever was typed or extracted from
-            # an uploaded file *is* the whole posting, so even a two-word
-            # search like "Comptable senior" is entirely signal and must
-            # still produce something to search against — not a silently
-            # empty shortlist for input a human plainly wrote with intent.
-            # `job_text` is guaranteed non-empty at this point (the earlier
-            # guard above already handled the truly-blank case).
-            requirements = [Requirement(text=job_text.strip(), document=None, position=0)]
-        wanted = required_technologies(job_text)
-        weights = MatchWeights()
+        wanted = _string_items(filters.get("technologies"))
+        wanted_normalized = [(item, normalize_text(item)) for item in wanted]
+        backend = get_similarity_backend()
+        extractor = get_extractor()
+        storage = get_storage()
 
-        # Job posting text is not personal data, so this reads it the same way
-        # a tender's requirement passages are read — no CV-scope check needed.
-        structured = structure_requirements(
-            "\n\n".join(r.text for r in requirements[:6]), kind="tender"
-        )
-        if structured:
-            for term in structured.get("technologies", []):
-                if term and term not in wanted:
-                    wanted.append(term)
+        with session_scope() as session:
+            rows = (
+                session.execute(
+                    select(CV).where((CV.uploaded_by == tenant) | (CV.uploaded_by.is_(None)))
+                )
+                .scalars()
+                .all()
+            )
 
-        considered = match_tender(
-            tender_text=job_text,
-            requirements=requirements,
-            tenant=tenant,
-            limit=100_000,
-            veto_sample=100_000,
-            required=wanted,
-        )
-        kept = [m for m in considered if not m.vetoed]
-        refused = [m for m in considered if m.vetoed]
-        kept_total, vetoed_total = len(kept), len(refused)
+        ranked: list[tuple[float, CV, str, list[str], list[str]]] = []
+        for row in rows:
+            cv_text = ""
+            try:
+                data = storage.get_bytes(row.storage_key)
+                extracted = extractor.extract(
+                    data,
+                    content_type=row.content_type,
+                    filename=row.original_filename,
+                )
+                cv_text = extracted.text or ""
+            except Exception as exc:
+                logger.warning(
+                    "job_match.cv_text_unavailable",
+                    cv_id=str(row.id),
+                    error=str(exc)[:200],
+                )
 
-        shortlisted = kept[:limit]
-        job_filters = JobMatchFilters(**filters)
-        profiles = get_cv_profiles([m.cv_id for m in shortlisted], tenant=tenant)
+            normalized_cv = normalize_text(cv_text)
+            matched = [
+                label
+                for label, normalized in wanted_normalized
+                if normalized and normalized in normalized_cv
+            ]
+            missing = [label for label, _ in wanted_normalized if label not in matched]
+            score = backend.similarity(job_text, cv_text)
+            if wanted:
+                score = (score * 0.75) + ((len(matched) / len(wanted)) * 0.25)
+            ranked.append((score, row, cv_text, matched, missing))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
 
         candidates: list[dict[str, Any]] = []
-        filtered_total = 0
-        for match in shortlisted:
-            profile = profiles.get(match.cv_id)
-            payload = match.to_dict()
-            if profile is None:
-                payload["filtered_out"] = None
-                payload["filtered_reason"] = None
-                payload["structured_profile"] = None
-            else:
-                passed, reason = apply_filters(profile, job_filters)
-                payload["filtered_out"] = not passed
-                payload["filtered_reason"] = reason
-                payload["structured_profile"] = profile
-                if not passed:
-                    filtered_total += 1
-            candidates.append(payload)
-
-        for match in refused[:8]:
-            payload = match.to_dict()
-            payload["filtered_out"] = None
-            payload["filtered_reason"] = None
-            payload["structured_profile"] = None
-            candidates.append(payload)
+        for score, row, cv_text, matched, missing in ranked[:limit]:
+            passage = cv_text.strip().replace("\n", " ")[:500]
+            candidates.append(
+                {
+                    "cv_id": str(row.id),
+                    "label": row.original_filename,
+                    "headline": row.source_url,
+                    "score": round(score, 4),
+                    "retrieval_score": round(score, 4),
+                    "matched_technologies": matched,
+                    "missing_technologies": missing,
+                    "evidence": [
+                        {
+                            "passage": passage,
+                            "document": row.original_filename,
+                            "score": round(score, 4),
+                        }
+                    ]
+                    if passage
+                    else [],
+                    "vetoed": False,
+                    "veto_reason": None,
+                    "filtered_out": False,
+                    "filtered_reason": None,
+                    "structured_profile": {
+                        "age": None,
+                        "experience_years": None,
+                        "education": None,
+                        "certifications": [],
+                        "languages": [],
+                        "skills": [],
+                    },
+                }
+            )
 
         logger.info(
             "job_match.completed",
-            requirements=len(requirements),
             technologies=len(wanted),
             candidates=len(candidates),
-            filtered_total=filtered_total,
         )
         return {
             "status": "ok",
-            "requirements": [
-                {"position": r.position, "document": r.document, "text": r.text[:500]}
-                for r in requirements
-            ],
+            "requirements": [{"position": 0, "document": None, "text": job_text[:500]}],
             "required_technologies": wanted,
-            "kept_total": kept_total,
-            "vetoed_total": vetoed_total,
-            "filtered_total": filtered_total,
-            "filters_applied": job_filters.as_dict(),
-            "structured_requirements": structured,
-            "weights": {"version": weights.version, **weights.as_dict()},
+            "kept_total": len(candidates),
+            "vetoed_total": 0,
+            "filtered_total": 0,
+            "filters_applied": filters,
+            "structured_requirements": None,
+            "weights": {"version": "lexical-fallback"},
             "candidates": candidates,
         }

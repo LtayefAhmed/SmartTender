@@ -97,7 +97,7 @@ async def match_job_posting(
     task = rank_job_posting_candidates.apply_async(
         kwargs={
             "job_text": job_text,
-            "tenant": principal.tenant,
+            "tenant": principal.identity,
             "filters": filters,
             "limit": limit,
             "requirement_limit": requirements,

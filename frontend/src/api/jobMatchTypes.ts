@@ -1,6 +1,24 @@
 /** Types for the job-match endpoint. Kept separate from `types.ts` so that
- *  file stays untouched — these extend its `CandidateMatch`/shared shapes. */
-import type { CandidateMatch } from "./types";
+ *  file stays untouched. */
+
+export interface CandidateEvidence {
+  passage: string;
+  document?: string | null;
+  score?: number | null;
+}
+
+export interface CandidateMatch {
+  cv_id: string;
+  label: string;
+  headline: string | null;
+  score: number;
+  retrieval_score?: number | null;
+  matched_technologies: string[];
+  missing_technologies: string[];
+  evidence: CandidateEvidence[];
+  vetoed: boolean;
+  veto_reason: string | null;
+}
 
 export interface StructuredCvProfile {
   age: number | null;
