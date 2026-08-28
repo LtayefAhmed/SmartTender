@@ -18,8 +18,8 @@ Playwright is **optional**. Install it only if you enable a connector with
 ## Option 1 — the whole stack in Docker (fastest)
 
 ```bash
+cp .env.example .env    # from the repo root — docker-compose.yml lives there too
 cd backend
-cp .env.example .env
 make up
 ```
 
@@ -55,12 +55,12 @@ curl -s -H "X-API-Key: dev-local-key" localhost:8000/sources/registry | python -
 Better for development: fast reload and a real debugger.
 
 ```bash
-cd backend
-cp .env.example .env
+cp .env.example .env    # from the repo root
 
 # infrastructure only
 docker compose up -d postgres redis minio mailpit
 
+cd backend
 make install
 make migrate
 make seed

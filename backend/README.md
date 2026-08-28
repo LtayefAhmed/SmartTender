@@ -59,14 +59,15 @@ in the running stack: **0.24 (low relevance) without extracted text, 0.79
 > onboarding end to end. This section is the short form.
 
 ```bash
-cd backend
-cp .env.example .env
+cp .env.example .env     # from the repo root — docker-compose.yml lives there too
 
+cd backend
 make install          # virtualenv + dependencies
 make test             # 475 tests, no infrastructure required, ~10 seconds
+cd ..
 
 docker compose up -d  # full stack: postgres, redis, minio, api, 3 workers, beat
-bash scripts/preflight.sh   # verify every port answers (see below)
+bash backend/scripts/preflight.sh   # verify every port answers (see below)
 
 # A notification profile, or the pipeline runs to completion and announces
 # nothing — which looks exactly like a broken notifier. The id must match what

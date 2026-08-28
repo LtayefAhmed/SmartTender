@@ -23,7 +23,11 @@ const NAV = [
   },
   {
     section: "Matching",
-    items: [{ to: "/matching/cv-import", icon: "⧫", label: "Import CVs" }],
+    items: [
+      { to: "/matching/cv-import", icon: "⧫", label: "Import CVs" },
+      { to: "/job-match", icon: "◎", label: "Recherche par fiche de poste" },
+      { to: "/proposals", icon: "◆", label: "Génération de proposition" },
+    ],
   },
   {
     section: "Suivi",

@@ -6,6 +6,7 @@ individual modules — anywhere metadata completeness matters.
 """
 
 from app.db.models.cv import CV
+from app.db.models.cv_profile import CVProfile
 from app.db.models.job import ConnectorRun, ScrapingJob
 from app.db.models.log import ExecutionLog
 from app.db.models.notification import Notification, UserPreference
@@ -16,6 +17,7 @@ from app.db.models.tender import DuplicateRecord, Tender, TenderDocument, Tender
 
 __all__ = [
     "CV",
+    "CVProfile",
     "ConnectorRun",
     "DuplicateRecord",
     "ExecutionLog",

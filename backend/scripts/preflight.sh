@@ -14,7 +14,10 @@
 #   ./scripts/preflight.sh --check  report only, exit 1 if anything is down
 set -uo pipefail
 
-cd "$(dirname "$0")/.." || exit 1
+# docker-compose.yml lives at the repo root, two levels up from this script
+# (scripts/ -> backend/ -> root) — `docker compose restart` below needs to
+# run from wherever Compose can find it.
+cd "$(dirname "$0")/../.." || exit 1
 
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
