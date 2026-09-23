@@ -104,6 +104,7 @@ export function JobMatch() {
     setResult(null);
     try {
       const form = new FormData();
+      form.append("background", "true");
       if (mode === "file" && jobFile) form.append("file", jobFile);
       else form.append("text", jobText);
       if (ageMin) form.append("age_min", ageMin);
@@ -114,7 +115,20 @@ export function JobMatch() {
       if (languages.length) form.append("languages", languages.join(","));
       if (technologies.length) form.append("technologies", technologies.join(","));
 
-      const res = await api.upload<JobMatchResult>("/job-match", form);
+      const job = await api.upload<{ task_id: string }>("/job-match", form);
+      const deadline = Date.now() + 20 * 60 * 1000;
+      let res: JobMatchResult | undefined;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const progress = await api.get<{ status: string; result?: JobMatchResult }>(
+          `/job-match/${job.task_id}`
+        );
+        if (progress.status === "completed" && progress.result) {
+          res = progress.result;
+          break;
+        }
+      }
+      if (!res) throw new Error("La recherche prend trop de temps. Veuillez réessayer plus tard.");
       setResult(res);
       if (!res.candidates.length) {
         toast.ok("Recherche terminée", "Aucun candidat trouvé pour cette fiche de poste.");
@@ -274,7 +288,7 @@ export function JobMatch() {
           hint={result ? `${result.candidates.length}` : undefined}
         >
           {busy ? (
-            <Loading label="Recherche en cours…" />
+            <Loading label="Analyse des CV en cours… Cela peut prendre plusieurs minutes." />
           ) : error ? (
             <ErrorState error={error} />
           ) : !result ? (

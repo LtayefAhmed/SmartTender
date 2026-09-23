@@ -89,6 +89,50 @@ class TestValidation:
 
 
 class TestDispatch:
+    def test_background_search_returns_without_waiting(self, client, monkeypatch):
+        from unittest.mock import Mock
+        from app.api.routers import job_match
+
+        owners = Mock()
+        monkeypatch.setattr(job_match, "_owners", lambda: owners)
+        monkeypatch.setattr(_StubTask, "get", lambda *a, **kw: pytest.fail("Must not wait"))
+        response = client.post("/job-match", data={"text": "Python developer", "background": "true"})
+        assert response.status_code == 200
+        assert response.json()["status"] == "queued"
+        owners.setex.assert_called_once_with(
+            f"job-match:{response.json()['task_id']}", 3600, "amine"
+        )
+
+    @pytest.mark.parametrize("state,expected", [("PENDING", "queued"), ("STARTED", "running"), ("SUCCESS", "completed")])
+    def test_poll_search(self, client, monkeypatch, state, expected):
+        from unittest.mock import Mock
+        from app.api.routers import job_match
+        from app.workers.celery_app import celery_app
+
+        monkeypatch.setattr(job_match, "_owners", lambda: Mock(get=lambda key: "amine"))
+        monkeypatch.setattr(celery_app, "AsyncResult", lambda task_id: Mock(state=state, result={"candidates": []}))
+        response = client.get("/job-match/test")
+        assert response.status_code == 200
+        assert response.json()["status"] == expected
+        if state == "SUCCESS":
+            assert response.json()["result"] == {"candidates": []}
+
+    def test_other_user_cannot_read_search(self, client, monkeypatch):
+        from unittest.mock import Mock
+        from app.api.routers import job_match
+
+        monkeypatch.setattr(job_match, "_owners", lambda: Mock(get=lambda key: "another-user"))
+        assert client.get("/job-match/test").status_code == 404
+
+    def test_failed_search_returns_error(self, client, monkeypatch):
+        from unittest.mock import Mock
+        from app.api.routers import job_match
+        from app.workers.celery_app import celery_app
+
+        monkeypatch.setattr(job_match, "_owners", lambda: Mock(get=lambda key: "amine"))
+        monkeypatch.setattr(celery_app, "AsyncResult", lambda task_id: Mock(state="FAILURE"))
+        assert client.get("/job-match/test").status_code == 503
+
     def test_pasted_text_dispatches_the_ranking_task(self, client, _no_broker):
         response = client.post(
             "/job-match",

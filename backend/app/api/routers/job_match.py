@@ -9,6 +9,7 @@ unchanged — the embedding model must stay out of the API process.
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -43,6 +44,7 @@ async def match_job_posting(
     technologies: str | None = Form(default=None, description="Comma-separated."),
     limit: int = Form(default=20),
     requirements: int = Form(default=15),
+    background: bool = Form(default=False),
     principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Return the tenant's best-matching CVs for a job posting, with evidence.
@@ -94,7 +96,13 @@ async def match_job_posting(
 
     from app.workers.tasks.job_match import rank_job_posting_candidates
 
-    task = rank_job_posting_candidates.apply_async(
+    task_id = str(uuid4())
+    if background:
+        await anyio.to_thread.run_sync(
+            lambda: _owners().setex(f"job-match:{task_id}", 3600, principal.identity)
+        )
+    task = await anyio.to_thread.run_sync(lambda: rank_job_posting_candidates.apply_async(
+        task_id=task_id,
         kwargs={
             "job_text": job_text,
             "tenant": principal.identity,
@@ -103,7 +111,10 @@ async def match_job_posting(
             "requirement_limit": requirements,
         },
         queue="ai",
-    )
+    ))
+
+    if background:
+        return {"status": "queued", "task_id": task_id}
 
     try:
         outcome = await anyio.to_thread.run_sync(
@@ -125,3 +136,29 @@ async def match_job_posting(
         actor=principal.identity,
     )
     return outcome
+
+
+def _owners():
+    from redis import Redis
+    from app.core.config import get_settings
+
+    return Redis.from_url(
+        get_settings().redis.cache_url, decode_responses=True,
+        socket_timeout=5, socket_connect_timeout=5,
+    )
+
+
+@router.get("/{task_id}", summary="Check a background CV search")
+def job_match_status(
+    task_id: str, principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    from app.workers.celery_app import celery_app
+
+    if _owners().get(f"job-match:{task_id}") != principal.identity:
+        raise HTTPException(404, detail="Search not found or expired.")
+    task = celery_app.AsyncResult(task_id)
+    if task.state == "SUCCESS":
+        return {"status": "completed", "result": task.result}
+    if task.state in {"FAILURE", "REVOKED"}:
+        raise HTTPException(503, detail="Search failed. Please retry.")
+    return {"status": "running" if task.state == "STARTED" else "queued"}
