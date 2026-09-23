@@ -31,6 +31,20 @@ def _split_list(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+@router.post("/import-linkedin", summary="Read a public LinkedIn job or post")
+async def import_linkedin(
+    url: str = Form(..., max_length=2048),
+    principal: Principal = Depends(require_principal),
+) -> dict[str, str]:
+    from app.services.linkedin_post import LinkedInImportError, import_linkedin_post
+
+    try:
+        with anyio.fail_after(20):
+            return await import_linkedin_post(url)
+    except (LinkedInImportError, TimeoutError) as exc:
+        raise HTTPException(422, detail=str(exc) or "LinkedIn ne répond pas. Utilisez « Coller le texte ».") from exc
+
+
 @router.post("", summary="Rank CVs against a pasted or uploaded job posting")
 async def match_job_posting(
     text: str | None = Form(default=None),

@@ -6,7 +6,7 @@ import { Badge, Card, Empty, ErrorState, Loading, Meter, Spinner } from "../comp
 import { TagInput } from "../components/TagInput";
 import { useToast } from "../components/toast";
 
-type Mode = "paste" | "file";
+type Mode = "paste" | "file" | "linkedin";
 
 //: Common certifications recruiters filter on. Not exhaustive — the field
 //: still accepts free text, this only saves typing the frequent ones.
@@ -66,6 +66,27 @@ export function JobMatch() {
   const [mode, setMode] = useState<Mode>("paste");
   const [jobText, setJobText] = useState("");
   const [jobFile, setJobFile] = useState<File | null>(null);
+  const [linkedinUrl, setLinkedinUrl] = useState("");
+  const [linkedinBusy, setLinkedinBusy] = useState(false);
+  const [linkedinError, setLinkedinError] = useState<string | null>(null);
+
+  async function importLinkedin() {
+    setLinkedinBusy(true);
+    setLinkedinError(null);
+    try {
+      const form = new FormData();
+      form.append("url", linkedinUrl.trim());
+      const imported = await api.upload<{ text: string }>("/job-match/import-linkedin", form);
+      setJobText(imported.text);
+      setJobFile(null);
+      setMode("paste");
+      toast.ok("Publication importée", "Vérifiez le texte avant de lancer la recherche.");
+    } catch (e) {
+      setLinkedinError((e as Error).message);
+    } finally {
+      setLinkedinBusy(false);
+    }
+  }
 
   const [ageMin, setAgeMin] = useState("");
   const [ageMax, setAgeMax] = useState("");
@@ -96,7 +117,7 @@ export function JobMatch() {
     }
   }
 
-  const canSubmit = (mode === "paste" ? jobText.trim().length > 0 : jobFile !== null) && !busy;
+  const canSubmit = (mode === "paste" ? jobText.trim().length > 0 : mode === "file" && jobFile !== null) && !busy && !linkedinBusy;
 
   async function submit() {
     setBusy(true);
@@ -150,10 +171,11 @@ export function JobMatch() {
       <div className="content grid cols-2" style={{ alignItems: "start" }}>
         <div className="stack">
           <Card title="Fiche de poste">
-            <div className="row tiny" style={{ gap: 14, marginBottom: 10 }}>
+            <div className="row tiny" style={{ gap: 14, marginBottom: 10, flexWrap: "wrap" }}>
               <label className="row" style={{ gap: 6, cursor: "pointer" }}>
                 <input
                   type="radio"
+                  disabled={linkedinBusy}
                   checked={mode === "paste"}
                   onChange={() => {
                     setMode("paste");
@@ -167,12 +189,18 @@ export function JobMatch() {
                 <input
                   type="radio"
                   checked={mode === "file"}
+                  disabled={linkedinBusy}
                   onChange={() => {
                     setMode("file");
                     setJobText("");
                   }}
                 />
                 Importer un fichier
+              </label>
+              <label className="row" style={{ gap: 6, cursor: "pointer" }}>
+                <input type="radio" checked={mode === "linkedin"} disabled={linkedinBusy}
+                  onChange={() => setMode("linkedin")} />
+                Lien LinkedIn
               </label>
             </div>
 
@@ -184,6 +212,23 @@ export function JobMatch() {
                 value={jobText}
                 onChange={(e) => pastText(e.target.value)}
               />
+            ) : mode === "linkedin" ? (
+              <div className="stack">
+                <label className="field">
+                  <span>Lien de l'offre ou de la publication</span>
+                  <input className="input" type="url" value={linkedinUrl} disabled={linkedinBusy}
+                    placeholder="https://www.linkedin.com/jobs/view/..."
+                    onChange={(e) => { setLinkedinUrl(e.target.value); setLinkedinError(null); }} />
+                </label>
+                <div className="tiny muted">Le texte public sera importé pour vérification. Si une connexion est demandée, copiez le texte depuis LinkedIn.</div>
+                <button className="btn" onClick={importLinkedin} disabled={!linkedinUrl.trim() || linkedinBusy || busy}>
+                  {linkedinBusy ? <Spinner /> : "Importer la publication"}
+                </button>
+                {linkedinError && <div role="alert" className="tiny">
+                  {linkedinError}
+                  <button className="btn mt" onClick={() => setMode("paste")}>Coller le texte</button>
+                </div>}
+              </div>
             ) : (
               <div
                 className="dropzone"

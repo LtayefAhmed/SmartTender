@@ -77,6 +77,21 @@ async def client(async_engine) -> AsyncIterator[TestClient]:
 
 
 class TestValidation:
+    def test_linkedin_import(self, client, monkeypatch):
+        from app.services import linkedin_post
+
+        async def imported(url):
+            return {"text": "Python developer", "source_url": url}
+
+        monkeypatch.setattr(linkedin_post, "import_linkedin_post", imported)
+        response = client.post("/job-match/import-linkedin", data={"url": "https://www.linkedin.com/posts/test"})
+        assert response.status_code == 200
+        assert response.json()["text"] == "Python developer"
+
+    def test_invalid_linkedin_import(self, client):
+        response = client.post("/job-match/import-linkedin", data={"url": "https://localhost/"})
+        assert response.status_code == 422
+
     def test_neither_text_nor_file_is_rejected(self, client):
         response = client.post("/job-match", data={})
 
