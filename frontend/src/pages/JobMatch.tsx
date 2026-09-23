@@ -366,6 +366,19 @@ export function JobMatch() {
 }
 
 function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
+  const [document, setDocument] = useState<{ url: string; content_type: string } | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [documentError, setDocumentError] = useState<string | null>(null);
+  async function viewCv() {
+    if (document) { setDocument(null); return; }
+    setOpening(true);
+    setDocumentError(null);
+    try {
+      setDocument(await api.get<{ url: string; content_type: string }>(`/cvs/${c.cv_id}/download`));
+    } catch (e) {
+      setDocumentError((e as Error).message);
+    } finally { setOpening(false); }
+  }
   const tone =
     c.vetoed ? "red" : c.filtered_out ? "amber" : "teal";
   const statusLabel = c.vetoed
@@ -381,10 +394,33 @@ function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
         <Badge color={tone}>{statusLabel}</Badge>
       </div>
       {c.headline && <div className="tiny muted">{c.headline}</div>}
+      <button className="btn mt" onClick={viewCv} disabled={opening}>
+        {opening ? "Ouverture…" : document ? "Fermer le CV" : "Voir le CV original"}
+      </button>
+      {documentError && <div role="alert" className="tiny mt">{documentError}</div>}
+      {document && <div className="mt">
+        <a href={document.url} target="_blank" rel="noopener noreferrer">Ouvrir / télécharger le CV</a>
+        {document.content_type === "application/pdf" ?
+          <iframe title={`CV : ${c.label}`} src={document.url} style={{ width: "100%", height: 600, border: "1px solid var(--border)", marginTop: 8 }} /> :
+          <div className="tiny muted mt">Téléchargez ce document pour le consulter dans votre lecteur DOCX.</div>}
+      </div>}
       <div className="row" style={{ gap: 8, marginTop: 6, alignItems: "center" }}>
         <Meter value={c.score} />
         <span className="tiny mono">{(c.score * 100).toFixed(0)}%</span>
       </div>
+
+      {c.explanation && <div className="tiny mt">
+        <strong>Pourquoi ce classement ? Rang {c.explanation.rank} sur {c.explanation.total_candidates}</strong>
+        <div>Similarité du texte : {(c.explanation.text_similarity * 100).toFixed(1)} / 100
+          {" · "}poids {(c.explanation.text_weight * 100).toFixed(0)} %</div>
+        {c.explanation.technology_coverage !== null && <div>
+          Technologies demandées retrouvées : {c.matched_technologies.length} / {c.matched_technologies.length + c.missing_technologies.length}
+          {" · "}poids {(c.explanation.technology_weight * 100).toFixed(0)} %
+        </div>}
+        <div className="muted mt">Score de comparaison des CV importés, pas une probabilité de réussite.
+          L'âge, l'expérience, les diplômes, les certifications et les langues ne sont pas évalués par ce classement.</div>
+        {!c.explanation.text_available && <div role="status">Texte du CV indisponible : consultez le document original.</div>}
+      </div>}
 
       {c.structured_profile && (
         <div className="tiny muted mt">

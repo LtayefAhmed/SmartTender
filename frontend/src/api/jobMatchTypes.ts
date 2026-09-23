@@ -34,6 +34,17 @@ export interface StructuredCvProfile {
  *  vetoed candidate shown for transparency — filters were never evaluated for
  *  it, which must read differently from "evaluated and passed". */
 export interface JobMatchCandidate extends CandidateMatch {
+  explanation?: {
+    rank: number;
+    total_candidates: number;
+    text_similarity: number;
+    text_weight: number;
+    technology_coverage: number | null;
+    technology_weight: number;
+    text_available: boolean;
+    method: string;
+    evaluated_criteria: string[];
+  };
   filtered_out: boolean | null;
   filtered_reason: string | null;
   structured_profile: StructuredCvProfile | null;

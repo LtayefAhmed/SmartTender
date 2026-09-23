@@ -77,6 +77,25 @@ async def client(async_engine) -> AsyncIterator[TestClient]:
 
 
 class TestValidation:
+    @pytest.mark.parametrize("owner,expected", [("amine", 200), (None, 200), ("other", 404)])
+    def test_original_cv_link_checks_owner(self, client, monkeypatch, owner, expected):
+        from types import SimpleNamespace
+        from app.services import storage
+
+        async def get_row(*args, **kwargs):
+            return SimpleNamespace(uploaded_by=owner, storage_key="cvs/test.pdf", original_filename="test.pdf", content_type="application/pdf")
+
+        monkeypatch.setattr(AsyncSession, "get", get_row)
+        monkeypatch.setattr(storage, "get_storage", lambda: SimpleNamespace(presigned_url=lambda key: "https://storage.test/signed", presigned_ttl=900))
+        response = client.get("/cvs/11111111-1111-1111-1111-111111111111/download")
+        assert response.status_code == expected
+        if expected == 200:
+            assert response.json()["content_type"] == "application/pdf"
+            assert response.json()["url"] == "https://storage.test/signed"
+
+    def test_missing_cv_link(self, client):
+        assert client.get("/cvs/11111111-1111-1111-1111-111111111111/download").status_code == 404
+
     def test_linkedin_import(self, client, monkeypatch):
         from app.services import linkedin_post
 

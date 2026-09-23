@@ -75,7 +75,7 @@ def rank_job_posting_candidates(
                 .all()
             )
 
-        ranked: list[tuple[float, CV, str, list[str], list[str]]] = []
+        ranked: list[tuple[float, CV, str, list[str], list[str], float]] = []
         for row in rows:
             cv_text = ""
             try:
@@ -101,15 +101,19 @@ def rank_job_posting_candidates(
             ]
             missing = [label for label, _ in wanted_normalized if label not in matched]
             score = backend.similarity(job_text, cv_text)
+            text_score = score
             if wanted:
                 score = (score * 0.75) + ((len(matched) / len(wanted)) * 0.25)
-            ranked.append((score, row, cv_text, matched, missing))
+            ranked.append((score, row, cv_text, matched, missing, text_score))
 
         ranked.sort(key=lambda item: item[0], reverse=True)
 
         candidates: list[dict[str, Any]] = []
-        for score, row, cv_text, matched, missing in ranked[:limit]:
-            passage = cv_text.strip().replace("\n", " ")[:500]
+        for rank, (score, row, cv_text, matched, missing, text_score) in enumerate(ranked[:limit], 1):
+            # Select relevant excerpts throughout the CV instead of its first lines.
+            words = cv_text.split()
+            passages = [" ".join(words[i:i + 70]) for i in range(0, len(words), 70)]
+            passages = sorted(passages, key=lambda p: backend.similarity(job_text, p), reverse=True)[:3]
             candidates.append(
                 {
                     "cv_id": str(row.id),
@@ -117,17 +121,27 @@ def rank_job_posting_candidates(
                     "headline": row.source_url,
                     "score": round(score, 4),
                     "retrieval_score": round(score, 4),
+                    "explanation": {
+                        "rank": rank,
+                        "total_candidates": len(ranked),
+                        "text_similarity": round(text_score, 4),
+                        "text_weight": 0.75 if wanted else 1.0,
+                        "technology_coverage": len(matched) / len(wanted) if wanted else None,
+                        "technology_weight": 0.25 if wanted else 0.0,
+                        "text_available": bool(cv_text.strip()),
+                        "method": backend.name,
+                        "evaluated_criteria": ["text_similarity", "technologies"] if wanted else ["text_similarity"],
+                    },
                     "matched_technologies": matched,
                     "missing_technologies": missing,
                     "evidence": [
                         {
                             "passage": passage,
                             "document": row.original_filename,
-                            "score": round(score, 4),
+                            "score": round(backend.similarity(job_text, passage), 4),
                         }
-                    ]
-                    if passage
-                    else [],
+                        for passage in passages
+                    ],
                     "vetoed": False,
                     "veto_reason": None,
                     "filtered_out": False,

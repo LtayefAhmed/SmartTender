@@ -118,6 +118,23 @@ async def import_cv(
     return CVRead.model_validate(row)
 
 
+@router.get("/{cv_id}/download", summary="Get a temporary link to the original CV")
+async def download_cv(
+    cv_id: uuid_module.UUID,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+) -> dict:
+    row = await session.get(CV, cv_id)
+    if row is None or row.uploaded_by not in (None, principal.identity):
+        raise HTTPException(404, detail="CV not found.")
+    from app.services.storage import get_storage
+
+    storage = get_storage()
+    url = await anyio.to_thread.run_sync(lambda: storage.presigned_url(row.storage_key))
+    return {"url": url, "filename": row.original_filename, "content_type": row.content_type,
+            "expires_in_seconds": storage.presigned_ttl}
+
+
 @router.delete("/{cv_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Remove an imported CV")
 async def delete_cv(
     cv_id: uuid_module.UUID,
