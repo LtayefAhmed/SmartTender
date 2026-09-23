@@ -362,6 +362,34 @@ h3 {
 .cols-2 {
   grid-template-columns: repeat(2, 1fr);
 }
+/* Keep long CV names, URLs and evidence inside the job-matching columns. */
+.job-match-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+}
+.job-match-layout > *,
+.job-match-layout .card,
+.job-match-layout .stack,
+.job-match-layout .row > * {
+  min-width: 0;
+}
+.job-match-layout .card {
+  overflow-wrap: anywhere;
+}
+.job-match-candidate .row {
+  flex-wrap: wrap;
+}
+.job-match-candidate .badge {
+  max-width: 100%;
+  white-space: normal;
+}
+.job-match-candidate summary {
+  cursor: pointer;
+}
+@media (max-width: 1050px) {
+  .job-match-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .cols-3 {
   grid-template-columns: repeat(3, 1fr);
 }

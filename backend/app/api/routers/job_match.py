@@ -49,14 +49,14 @@ async def import_linkedin(
 async def match_job_posting(
     text: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
-    age_min: int | None = Form(default=None),
-    age_max: int | None = Form(default=None),
-    min_experience_years: int | None = Form(default=None),
+    age_min: int | None = Form(default=None, ge=0, le=120),
+    age_max: int | None = Form(default=None, ge=0, le=120),
+    min_experience_years: int | None = Form(default=None, ge=0, le=60),
     certifications: str | None = Form(default=None, description="Comma-separated."),
     education: str | None = Form(default=None, description="Comma-separated."),
     languages: str | None = Form(default=None, description="Comma-separated."),
     technologies: str | None = Form(default=None, description="Comma-separated."),
-    limit: int = Form(default=20),
+    limit: int = Form(default=20, ge=1, le=200),
     requirements: int = Form(default=15),
     background: bool = Form(default=False),
     principal: Principal = Depends(require_principal),
@@ -68,6 +68,8 @@ async def match_job_posting(
     since a browser client already prevents populating both and a
     non-browser caller needs a defined tie-break regardless.
     """
+    if age_min is not None and age_max is not None and age_min > age_max:
+        raise HTTPException(422, detail="L'âge minimum doit être inférieur ou égal à l'âge maximum.")
     has_text = bool(text and text.strip())
     if not has_text and file is None:
         raise HTTPException(

@@ -49,6 +49,7 @@ def rank_job_posting_candidates(
     from app.services.extraction import get_extractor
     from app.services.similarity import get_similarity_backend
     from app.services.storage import get_storage
+    from app.services.cv_filter_evidence import evaluate_cv_filters
 
     del self, requirement_limit
 
@@ -76,6 +77,7 @@ def rank_job_posting_candidates(
             )
 
         ranked: list[tuple[float, CV, str, list[str], list[str], float]] = []
+        assessments = {}
         for row in rows:
             cv_text = ""
             try:
@@ -94,6 +96,7 @@ def rank_job_posting_candidates(
                 )
 
             normalized_cv = normalize_text(cv_text)
+            assessments[str(row.id)] = evaluate_cv_filters(cv_text, filters)
             matched = [
                 label
                 for label, normalized in wanted_normalized
@@ -106,10 +109,13 @@ def rank_job_posting_candidates(
                 score = (score * 0.75) + ((len(matched) / len(wanted)) * 0.25)
             ranked.append((score, row, cv_text, matched, missing, text_score))
 
-        ranked.sort(key=lambda item: item[0], reverse=True)
+        priority = {"pass": 0, "unknown": 1, "fail": 2}
+        ranked.sort(key=lambda item: (priority[assessments[str(item[1].id)]["status"]], -item[0], str(item[1].id)))
 
         candidates: list[dict[str, Any]] = []
         for rank, (score, row, cv_text, matched, missing, text_score) in enumerate(ranked[:limit], 1):
+            assessment = assessments[str(row.id)]
+            reasons = [f"{check['requested']} : {check['reason']}" for check in assessment["checks"] if check["status"] != "pass"]
             # Select relevant excerpts throughout the CV instead of its first lines.
             words = cv_text.split()
             passages = [" ".join(words[i:i + 70]) for i in range(0, len(words), 70)]
@@ -130,7 +136,7 @@ def rank_job_posting_candidates(
                         "technology_weight": 0.25 if wanted else 0.0,
                         "text_available": bool(cv_text.strip()),
                         "method": backend.name,
-                        "evaluated_criteria": ["text_similarity", "technologies"] if wanted else ["text_similarity"],
+                        "evaluated_criteria": list(dict.fromkeys((["text_similarity", "technologies"] if wanted else ["text_similarity"]) + [check["criterion"] for check in assessment["checks"]])),
                     },
                     "matched_technologies": matched,
                     "missing_technologies": missing,
@@ -144,16 +150,11 @@ def rank_job_posting_candidates(
                     ],
                     "vetoed": False,
                     "veto_reason": None,
-                    "filtered_out": False,
-                    "filtered_reason": None,
-                    "structured_profile": {
-                        "age": None,
-                        "experience_years": None,
-                        "education": None,
-                        "certifications": [],
-                        "languages": [],
-                        "skills": [],
-                    },
+                    "filter_status": assessment["status"],
+                    "filter_checks": assessment["checks"],
+                    "filtered_out": assessment["status"] != "pass",
+                    "filtered_reason": " ; ".join(reasons) or None,
+                    "structured_profile": assessment["profile"],
                 }
             )
 
@@ -166,9 +167,11 @@ def rank_job_posting_candidates(
             "status": "ok",
             "requirements": [{"position": 0, "document": None, "text": job_text[:500]}],
             "required_technologies": wanted,
-            "kept_total": len(candidates),
+            "kept_total": sum(a["status"] == "pass" for a in assessments.values()),
             "vetoed_total": 0,
-            "filtered_total": 0,
+            "filtered_total": sum(a["status"] == "fail" for a in assessments.values()),
+            "unverified_total": sum(a["status"] == "unknown" for a in assessments.values()),
+            "total_candidates": len(ranked),
             "filters_applied": filters,
             "structured_requirements": None,
             "weights": {"version": "lexical-fallback"},

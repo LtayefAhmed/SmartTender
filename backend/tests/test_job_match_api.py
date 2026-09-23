@@ -77,6 +77,10 @@ async def client(async_engine) -> AsyncIterator[TestClient]:
 
 
 class TestValidation:
+    @pytest.mark.parametrize("data", [{"age_min": -1}, {"age_max": 121}, {"age_min": 40, "age_max": 20}, {"min_experience_years": -1}, {"min_experience_years": 61}, {"limit": 0}, {"limit": 201}])
+    def test_invalid_filter_bounds(self, client, data):
+        assert client.post("/job-match", data={"text": "Python developer", **data}).status_code == 422
+
     @pytest.mark.parametrize("owner,expected", [("amine", 200), (None, 200), ("other", 404)])
     def test_original_cv_link_checks_owner(self, client, monkeypatch, owner, expected):
         from types import SimpleNamespace

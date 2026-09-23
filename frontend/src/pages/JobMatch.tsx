@@ -98,6 +98,7 @@ export function JobMatch() {
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<JobMatchResult | null>(null);
+  const [showUnconfirmed, setShowUnconfirmed] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
   function pickFile(f: File | null) {
@@ -168,7 +169,7 @@ export function JobMatch() {
         title="Recherche de CVs par fiche de poste"
         sub="Collez ou importez une fiche de poste, filtrez, et retrouvez les meilleurs profils déjà importés."
       />
-      <div className="content grid cols-2" style={{ alignItems: "start" }}>
+      <div className="content grid job-match-layout" style={{ alignItems: "start" }}>
         <div className="stack">
           <Card title="Fiche de poste">
             <div className="row tiny" style={{ gap: 14, marginBottom: 10, flexWrap: "wrap" }}>
@@ -257,6 +258,7 @@ export function JobMatch() {
           </Card>
 
           <Card title="Filtres">
+            <p className="tiny muted">Toutes les langues et certifications sélectionnées sont requises. Pour les diplômes, une des options suffit. Une information absente reste « À vérifier ». Les profils confirmés sont affichés en premier.</p>
             <div className="row" style={{ gap: 10 }}>
               <div className="field" style={{ flex: 1 }}>
                 <label>Âge min</label>
@@ -265,6 +267,7 @@ export function JobMatch() {
                   type="number"
                   min={0}
                   value={ageMin}
+                  max={120}
                   onChange={(e) => setAgeMin(e.target.value)}
                 />
               </div>
@@ -275,6 +278,7 @@ export function JobMatch() {
                   type="number"
                   min={0}
                   value={ageMax}
+                  max={120}
                   onChange={(e) => setAgeMax(e.target.value)}
                 />
               </div>
@@ -285,13 +289,14 @@ export function JobMatch() {
                   type="number"
                   min={0}
                   value={minExperience}
+                  max={60}
                   onChange={(e) => setMinExperience(e.target.value)}
                 />
               </div>
             </div>
 
             <div className="field mt">
-              <label>Certifications</label>
+              <label>Certifications (toutes requises)</label>
               <TagInput
                 value={certifications}
                 onChange={setCertifications}
@@ -300,11 +305,11 @@ export function JobMatch() {
               />
             </div>
             <div className="field mt">
-              <label>Niveau d'études</label>
+              <label>Diplômes acceptés (au moins un)</label>
               <TagInput value={education} onChange={setEducation} placeholder="Master, Ingénieur…" />
             </div>
             <div className="field mt">
-              <label>Langues</label>
+              <label>Langues (toutes requises)</label>
               <TagInput
                 value={languages}
                 onChange={setLanguages}
@@ -346,14 +351,22 @@ export function JobMatch() {
             <div className="stack">
               <div className="row tiny muted" style={{ gap: 12, flexWrap: "wrap" }}>
                 <span>{result.kept_total} retenus</span>
-                <span>{result.vetoed_total} écartés</span>
-                <span>{result.filtered_total} filtrés</span>
+                <span>{result.unverified_total ?? 0} à vérifier</span>
+                <span>{result.filtered_total} non conformes</span>
+                <span>{result.candidates.filter(c => showUnconfirmed || !c.filtered_out).length} affichés sur {result.total_candidates ?? result.candidates.length}</span>
                 {result.required_technologies.length > 0 && (
                   <span>Technologies : {result.required_technologies.join(", ")}</span>
                 )}
               </div>
+              <label className="row tiny" style={{ gap: 8 }}>
+                <input type="checkbox" checked={showUnconfirmed} onChange={e => setShowUnconfirmed(e.target.checked)} />
+                Afficher aussi les profils à vérifier et non conformes
+              </label>
+              {!showUnconfirmed && !result.candidates.some(c => !c.filtered_out) && <Empty>
+                Aucun profil ne confirme tous les critères demandés. Activez l'option ci-dessus pour examiner les informations manquantes.
+              </Empty>}
               <div className="stack" style={{ gap: 10 }}>
-                {result.candidates.map((c) => (
+                {result.candidates.filter(c => showUnconfirmed || !c.filtered_out).map((c) => (
                   <CandidateCard key={c.cv_id} candidate={c} />
                 ))}
               </div>
@@ -380,15 +393,17 @@ function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
     } finally { setOpening(false); }
   }
   const tone =
-    c.vetoed ? "red" : c.filtered_out ? "amber" : "teal";
+    c.vetoed || c.filter_status === "fail" ? "red" : c.filtered_out ? "amber" : "teal";
   const statusLabel = c.vetoed
-    ? c.veto_reason ?? "Écarté"
+    ? "Écarté"
+    : c.filter_status === "unknown" ? "À vérifier"
+    : c.filter_status === "fail" ? "Non conforme"
     : c.filtered_out
-    ? c.filtered_reason ?? "Filtré"
+    ? "À vérifier"
     : "Retenu";
 
   return (
-    <div className="card" style={{ padding: 12, borderLeft: `3px solid var(--${tone})` }}>
+    <div className="card job-match-candidate" style={{ padding: 12, borderLeft: `3px solid var(--${tone})` }}>
       <div className="row spread">
         <span style={{ fontWeight: 600 }}>{c.label}</span>
         <Badge color={tone}>{statusLabel}</Badge>
@@ -408,6 +423,8 @@ function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
         <Meter value={c.score} />
         <span className="tiny mono">{(c.score * 100).toFixed(0)}%</span>
       </div>
+      {((c.vetoed && c.veto_reason) || (c.filtered_out && !c.filter_checks?.length && c.filtered_reason)) &&
+        <p className="tiny muted">{c.veto_reason || c.filtered_reason}</p>}
 
       {c.explanation && <div className="tiny mt">
         <strong>Pourquoi ce classement ? Rang {c.explanation.rank} sur {c.explanation.total_candidates}</strong>
@@ -417,9 +434,26 @@ function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
           Technologies demandées retrouvées : {c.matched_technologies.length} / {c.matched_technologies.length + c.missing_technologies.length}
           {" · "}poids {(c.explanation.technology_weight * 100).toFixed(0)} %
         </div>}
-        <div className="muted mt">Score de comparaison des CV importés, pas une probabilité de réussite.
-          L'âge, l'expérience, les diplômes, les certifications et les langues ne sont pas évalués par ce classement.</div>
+        <details className="muted mt">
+          <summary>Comment lire le score ?</summary>
+          <p>Le score compare les CV ; ce n'est pas une probabilité de réussite. Les profils qui confirment les filtres passent en premier. Les informations absentes restent à vérifier.</p>
+        </details>
         {!c.explanation.text_available && <div role="status">Texte du CV indisponible : consultez le document original.</div>}
+      </div>}
+
+      {!!c.filter_checks?.length && <div className="stack mt" style={{ gap: 8 }}>
+        <strong className="tiny">Vérification des critères dans le CV</strong>
+        {c.filter_checks.map((check, index) => <div key={index} className="tiny" style={{ background: "var(--panel-2)", padding: 8, borderRadius: 6 }}>
+          <div className="row spread">
+            <strong>{check.requested}</strong>
+            <Badge color={check.status === "pass" ? "teal" : check.status === "fail" ? "red" : "amber"}>
+              {check.status === "pass" ? "Confirmé dans le CV" : check.status === "fail" ? "Hors critères" : "À vérifier"}
+            </Badge>
+          </div>
+          {check.observed != null && <div>{check.criterion === "age" ? "Âge relevé" : "Durée relevée"} : {check.observed} ans</div>}
+          <div>{check.reason}</div>
+          {check.evidence.map((quote, i) => <blockquote key={i} style={{ margin: "6px 0", paddingLeft: 8, borderLeft: "2px solid var(--muted)" }}>{quote}</blockquote>)}
+        </div>)}
       </div>}
 
       {c.structured_profile && (
