@@ -5,6 +5,7 @@ import { TopBar } from "../components/Layout";
 import { Badge, Card, Empty, ErrorState, Loading, Meter, Spinner } from "../components/ui";
 import { TagInput } from "../components/TagInput";
 import { useToast } from "../components/toast";
+import { CandidateComparison, EvidenceViewer } from "../components/CandidateComparison";
 
 type Mode = "paste" | "file" | "linkedin";
 
@@ -98,7 +99,11 @@ export function JobMatch() {
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<JobMatchResult | null>(null);
-  const [showUnconfirmed, setShowUnconfirmed] = useState(false);
+  const [showUnconfirmed, setShowUnconfirmed] = useState(true);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [comparing, setComparing] = useState(false);
+  const [evidence, setEvidence] = useState<{ candidate: JobMatchCandidate; query: string } | null>(null);
+  const openEvidence = (candidate: JobMatchCandidate, query: string) => setEvidence({ candidate, query });
   const [error, setError] = useState<unknown>(null);
 
   function pickFile(f: File | null) {
@@ -124,9 +129,13 @@ export function JobMatch() {
     setBusy(true);
     setError(null);
     setResult(null);
+    setSelected([]);
+    setComparing(false);
+    setEvidence(null);
     try {
       const form = new FormData();
       form.append("background", "true");
+      form.append("limit", "0");
       if (mode === "file" && jobFile) form.append("file", jobFile);
       else form.append("text", jobText);
       if (ageMin) form.append("age_min", ageMin);
@@ -350,7 +359,7 @@ export function JobMatch() {
           ) : (
             <div className="stack">
               <div className="row tiny muted" style={{ gap: 12, flexWrap: "wrap" }}>
-                <span>{result.kept_total} retenus</span>
+                <span>{result.kept_total} profils aux filtres validés</span>
                 <span>{result.unverified_total ?? 0} à vérifier</span>
                 <span>{result.filtered_total} non conformes</span>
                 <span>{result.candidates.filter(c => showUnconfirmed || !c.filtered_out).length} affichés sur {result.total_candidates ?? result.candidates.length}</span>
@@ -358,16 +367,27 @@ export function JobMatch() {
                   <span>Technologies : {result.required_technologies.join(", ")}</span>
                 )}
               </div>
+              <p className="tiny muted">Tous les CV sont affichés par défaut. Classement : filtres validés, puis à vérifier, puis non conformes ; dans chaque groupe, proportion de critères confirmés, puis score de correspondance décroissant. Il n'y a aucun seuil de score pour valider les filtres : chaque filtre sélectionné doit être confirmé par le CV. Une information absente reste à vérifier.</p>
               <label className="row tiny" style={{ gap: 8 }}>
                 <input type="checkbox" checked={showUnconfirmed} onChange={e => setShowUnconfirmed(e.target.checked)} />
                 Afficher aussi les profils à vérifier et non conformes
               </label>
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                <button className="btn" disabled={selected.length < 2} onClick={() => setComparing(true)}>Comparer ({selected.length}/4)</button>
+                <button className="btn" disabled={!selected.length} onClick={() => setSelected([])}>Effacer la sélection</button>
+                <span className="tiny muted">Sélectionnez 2 à 4 profils.</span>
+              </div>
+              {comparing && <CandidateComparison candidates={result.candidates.filter(c => selected.includes(c.cv_id))} onClose={() => setComparing(false)} onEvidence={openEvidence} />}
+              {evidence && <EvidenceViewer candidate={evidence.candidate} query={evidence.query} onClose={() => setEvidence(null)} />}
               {!showUnconfirmed && !result.candidates.some(c => !c.filtered_out) && <Empty>
                 Aucun profil ne confirme tous les critères demandés. Activez l'option ci-dessus pour examiner les informations manquantes.
               </Empty>}
               <div className="stack" style={{ gap: 10 }}>
                 {result.candidates.filter(c => showUnconfirmed || !c.filtered_out).map((c) => (
-                  <CandidateCard key={c.cv_id} candidate={c} />
+                  <div key={c.cv_id}>
+                    <label className="row tiny"><input type="checkbox" checked={selected.includes(c.cv_id)} disabled={selected.length >= 4 && !selected.includes(c.cv_id)} onChange={() => setSelected(ids => ids.includes(c.cv_id) ? ids.filter(id => id !== c.cv_id) : ids.length < 4 ? [...ids, c.cv_id] : ids)} />Comparer {c.label}</label>
+                    <CandidateCard candidate={c} onEvidence={query => openEvidence(c, query)} />
+                  </div>
                 ))}
               </div>
             </div>
@@ -378,7 +398,7 @@ export function JobMatch() {
   );
 }
 
-function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
+function CandidateCard({ candidate: c, onEvidence }: { candidate: JobMatchCandidate; onEvidence: (query: string) => void }) {
   const [document, setDocument] = useState<{ url: string; content_type: string } | null>(null);
   const [opening, setOpening] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
@@ -420,6 +440,7 @@ function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
           <div className="tiny muted mt">Téléchargez ce document pour le consulter dans votre lecteur DOCX.</div>}
       </div>}
       <div className="row" style={{ gap: 8, marginTop: 6, alignItems: "center" }}>
+        <span className="tiny muted">Correspondance :</span>
         <Meter value={c.score} />
         <span className="tiny mono">{(c.score * 100).toFixed(0)}%</span>
       </div>
@@ -441,6 +462,9 @@ function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
         {!c.explanation.text_available && <div role="status">Texte du CV indisponible : consultez le document original.</div>}
       </div>}
 
+      <p className="tiny"><strong>Conformité aux filtres : </strong>{c.filter_checks?.length
+        ? `${c.filter_checks.filter(check => check.status === "pass").length}/${c.filter_checks.length} confirmés · ${c.filter_checks.filter(check => check.status === "unknown").length} à vérifier · ${c.filter_checks.filter(check => check.status === "fail").length} hors critères`
+        : "Aucun filtre à vérifier"}</p>
       {!!c.filter_checks?.length && <div className="stack mt" style={{ gap: 8 }}>
         <strong className="tiny">Vérification des critères dans le CV</strong>
         {c.filter_checks.map((check, index) => <div key={index} className="tiny" style={{ background: "var(--panel-2)", padding: 8, borderRadius: 6 }}>
@@ -479,7 +503,7 @@ function CandidateCard({ candidate: c }: { candidate: JobMatchCandidate }) {
       {c.matched_technologies.length > 0 && (
         <div className="tiny mt">
           <span className="muted">Technologies trouvées : </span>
-          {c.matched_technologies.join(", ")}
+          {c.matched_technologies.map(skill => <button className="btn evidence-skill" key={skill} onClick={() => onEvidence(skill)} title="Localiser la preuve dans le PDF">{skill} ↗</button>)}
         </div>
       )}
       {c.missing_technologies.length > 0 && (

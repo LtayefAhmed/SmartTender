@@ -110,10 +110,17 @@ def rank_job_posting_candidates(
             ranked.append((score, row, cv_text, matched, missing, text_score))
 
         priority = {"pass": 0, "unknown": 1, "fail": 2}
-        ranked.sort(key=lambda item: (priority[assessments[str(item[1].id)]["status"]], -item[0], str(item[1].id)))
+        def conformity_key(item):
+            assessment = assessments[str(item[1].id)]
+            checks = assessment["checks"]
+            confirmed = sum(check["status"] == "pass" for check in checks)
+            ratio = confirmed / len(checks) if checks else 0
+            return (priority[assessment["status"]], -ratio, -item[0], str(item[1].id))
+
+        ranked.sort(key=conformity_key)
 
         candidates: list[dict[str, Any]] = []
-        for rank, (score, row, cv_text, matched, missing, text_score) in enumerate(ranked[:limit], 1):
+        for rank, (score, row, cv_text, matched, missing, text_score) in enumerate(ranked if limit == 0 else ranked[:limit], 1):
             assessment = assessments[str(row.id)]
             reasons = [f"{check['requested']} : {check['reason']}" for check in assessment["checks"] if check["status"] != "pass"]
             # Select relevant excerpts throughout the CV instead of its first lines.

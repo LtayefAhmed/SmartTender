@@ -14,6 +14,8 @@ from __future__ import annotations
 import uuid as uuid_module
 
 import anyio
+import anyio.to_process
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +30,38 @@ from app.services.validation import UploadValidator
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/cvs", tags=["cvs"])
+_evidence_limiter = anyio.CapacityLimiter(2)
+
+
+class EvidenceRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=600)
+
+
+@router.post("/{cv_id}/evidence", summary="Locate and highlight text on original PDF pages")
+async def pdf_evidence(
+    cv_id: uuid_module.UUID,
+    request: EvidenceRequest,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+) -> dict:
+    row = await session.get(CV, cv_id)
+    if row is None or row.uploaded_by not in (None, principal.identity):
+        raise HTTPException(404, detail="CV not found.")
+    if row.content_type != "application/pdf":
+        raise HTTPException(415, detail="Le surlignage est disponible pour les PDF. Consultez le CV original pour ce document.")
+    if row.size_bytes > 30 * 1024 * 1024:
+        raise HTTPException(413, detail="Le PDF dépasse la limite de consultation de 30 Mo.")
+    from app.services.storage import get_storage
+    from app.services.pdf_evidence import locate_pdf_evidence
+
+    content = await anyio.to_thread.run_sync(lambda: get_storage().get_bytes(row.storage_key))
+    try:
+        with anyio.fail_after(45):
+            return await anyio.to_process.run_sync(locate_pdf_evidence, content, request.query, cancellable=True, limiter=_evidence_limiter)
+    except TimeoutError:
+        raise HTTPException(408, detail="La recherche dans le PDF a expiré. Consultez le CV original.")
+    except Exception:
+        raise HTTPException(422, detail="Ce PDF ne peut pas être consulté. Essayez le CV original.")
 
 
 @router.get("", response_model=Page[CVRead], summary="List imported CVs")

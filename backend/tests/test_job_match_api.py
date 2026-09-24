@@ -77,7 +77,7 @@ async def client(async_engine) -> AsyncIterator[TestClient]:
 
 
 class TestValidation:
-    @pytest.mark.parametrize("data", [{"age_min": -1}, {"age_max": 121}, {"age_min": 40, "age_max": 20}, {"min_experience_years": -1}, {"min_experience_years": 61}, {"limit": 0}, {"limit": 201}])
+    @pytest.mark.parametrize("data", [{"age_min": -1}, {"age_max": 121}, {"age_min": 40, "age_max": 20}, {"min_experience_years": -1}, {"min_experience_years": 61}, {"limit": -1}, {"limit": 201}])
     def test_invalid_filter_bounds(self, client, data):
         assert client.post("/job-match", data={"text": "Python developer", **data}).status_code == 422
 
@@ -195,3 +195,8 @@ class TestDispatch:
         filters = _no_broker[0]["kwargs"]["filters"]
         assert filters["age_min"] is None
         assert filters["certifications"] == []
+
+    def test_all_candidates_can_be_requested(self, client, _no_broker):
+        response = client.post("/job-match", data={"text": "Python developer", "limit": "0"})
+        assert response.status_code == 200
+        assert _no_broker[0]["kwargs"]["limit"] == 0

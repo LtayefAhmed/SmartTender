@@ -57,6 +57,13 @@ def test_filters_apply_before_limit_and_totals_cover_corpus(monkeypatch):
     assert result["candidates"][0]["filter_status"] == "pass"
     assert result["candidates"][0]["filter_checks"][0]["evidence"] == ["7 years of experience"]
     assert (result["kept_total"], result["unverified_total"], result["filtered_total"], result["total_candidates"]) == (1, 1, 1, 3)
-    all_results = rank_job_posting_candidates.run(job_text="Python", tenant="test", filters={"min_experience_years": 5})
+    all_results = rank_job_posting_candidates.run(job_text="Python", tenant="test", filters={"min_experience_years": 5}, limit=0)
     assert [c["filter_status"] for c in all_results["candidates"]] == ["pass", "unknown", "fail"]
     assert all(c["filtered_out"] for c in all_results["candidates"][1:])
+    # Within the unknown group, confirmed requirements precede text similarity.
+    texts["low"] = "SQL developer\n7 years of experience"
+    texts["high"] = "Python"
+    ranked = rank_job_posting_candidates.run(job_text="Python", tenant="test", filters={"min_experience_years": 5, "certifications": ["PMP"]}, limit=0)
+    assert len(ranked["candidates"]) == 3
+    assert all(c["filter_status"] == "unknown" for c in ranked["candidates"])
+    assert ranked["candidates"][0]["cv_id"] == "low"

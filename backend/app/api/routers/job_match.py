@@ -56,7 +56,7 @@ async def match_job_posting(
     education: str | None = Form(default=None, description="Comma-separated."),
     languages: str | None = Form(default=None, description="Comma-separated."),
     technologies: str | None = Form(default=None, description="Comma-separated."),
-    limit: int = Form(default=20, ge=1, le=200),
+    limit: int = Form(default=20, ge=0, le=200, description="0 returns all ranked candidates."),
     requirements: int = Form(default=15),
     background: bool = Form(default=False),
     principal: Principal = Depends(require_principal),
