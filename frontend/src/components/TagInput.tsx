@@ -1,15 +1,21 @@
 import { useState } from "react";
 
 /** Chip-style multi-value input (keywords, sectors, connectors…). Enter or
- *  comma commits a value; each chip has a remove button. */
+ *  comma commits a value; each chip has a remove button.
+ *
+ *  `suggestions`, when given, renders the not-yet-picked values as small
+ *  outlined chips below the input — a click adds them directly, since a
+ *  recruiter picking "PMP" from a list types nothing at all. */
 export function TagInput({
   value,
   onChange,
   placeholder,
+  suggestions,
 }: {
   value: string[];
   onChange: (v: string[]) => void;
   placeholder?: string;
+  suggestions?: string[];
 }) {
   const [draft, setDraft] = useState("");
 
@@ -18,6 +24,8 @@ export function TagInput({
     if (v && !value.includes(v)) onChange([...value, v]);
     setDraft("");
   }
+
+  const remaining = suggestions?.filter((s) => !value.includes(s)) ?? [];
 
   return (
     <div>
@@ -44,6 +52,20 @@ export function TagInput({
         }}
         onBlur={commit}
       />
+      {remaining.length > 0 && (
+        <div className="chips mt" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {remaining.map((s) => (
+            <button
+              key={s}
+              type="button"
+              className="chip suggestion"
+              onClick={() => onChange([...value, s])}
+            >
+              + {s}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

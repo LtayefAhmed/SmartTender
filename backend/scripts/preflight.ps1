@@ -19,7 +19,9 @@
 [CmdletBinding()]
 param([switch]$Check)
 
-Set-Location (Join-Path $PSScriptRoot "..")
+# docker-compose.yml lives at the repo root, two levels up from this script
+# (scripts/ -> backend/ -> root).
+Set-Location (Join-Path $PSScriptRoot "../..")
 
 # service, port, chemin, libellé — c'est l'URL qui compte, pas l'état du conteneur.
 $targets = @(

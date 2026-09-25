@@ -104,18 +104,22 @@ health: ## Probe infrastructure dependencies
 	$(BIN)/smarttender-admin health
 
 # --- docker ------------------------------------------------------------------
+# docker-compose.yml lives at the repo root (one level up), not here — it
+# orchestrates the whole platform, frontend included, not just this package.
+COMPOSE := docker compose -f ../docker-compose.yml
+
 .PHONY: up
 up: ## Start the full stack
-	docker compose up -d --build
+	$(COMPOSE) up -d --build
 
 .PHONY: down
 down: ## Stop the stack
-	docker compose down
+	$(COMPOSE) down
 
 .PHONY: clean-volumes
 clean-volumes: ## Stop the stack AND DELETE ALL DATA
-	docker compose down -v
+	$(COMPOSE) down -v
 
 .PHONY: logs
 logs: ## Tail the stack logs
-	docker compose logs -f --tail=100
+	$(COMPOSE) logs -f --tail=100

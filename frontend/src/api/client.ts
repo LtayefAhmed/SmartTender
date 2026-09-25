@@ -81,8 +81,21 @@ async function request<T>(
     payload = JSON.stringify(opts.body);
   }
 
-  const res = await fetch(url, { method, headers, body: payload });
-  const text = await res.text();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+  let res: Response;
+  let text: string;
+  try {
+    res = await fetch(url, { method, headers, body: payload, signal: controller.signal });
+    text = await res.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new ApiError(408, { message: "Le serveur met trop de temps à répondre. Veuillez réessayer.", retryable: true });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const data = text ? safeJson(text) : null;
   if (!res.ok) throw new ApiError(res.status, data);
   return data as T;

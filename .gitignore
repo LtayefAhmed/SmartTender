@@ -1,0 +1,5 @@
+# `.env.example` contains placeholders only and is the onboarding template, so
+# it stays in version control. `.env` holds the real values and never does.
+.env
+.env.local
+.env.*.local

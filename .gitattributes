@@ -1,0 +1,6 @@
+# Shell scripts get baked into Docker images and run there — a CRLF shebang
+# ("#!/bin/sh\r") fails with "not found" because the container looks for an
+# interpreter literally named "/bin/sh\r". Windows' default core.autocrlf
+# normalises them back to CRLF on every checkout/stash without this, which
+# already broke the frontend container's entrypoint twice in one session.
+*.sh text eol=lf

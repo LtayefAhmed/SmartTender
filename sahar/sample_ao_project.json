@@ -1,0 +1,30 @@
+{
+  "project": "Cloud Platform Migration",
+  "client": "Acme Corp",
+  "profiles": [
+    {
+      "role": "Senior Backend Developer",
+      "count": 2,
+      "skills": ["Python", "AWS", "Docker", "Kubernetes", "PostgreSQL"],
+      "description": "Design and maintain backend services and cloud infrastructure."
+    },
+    {
+      "role": "DevOps Engineer",
+      "count": 1,
+      "skills": ["Terraform", "CI/CD", "AWS", "Kubernetes"],
+      "description": "Own infrastructure automation and deployment pipelines."
+    },
+    {
+      "role": "Project Manager",
+      "count": 1,
+      "skills": ["Agile", "Stakeholder management", "Budgeting", "Risk management"],
+      "description": "Coordinate the migration project across teams and vendors."
+    },
+    {
+      "role": "Executive Pastry Chef",
+      "count": 1,
+      "skills": ["Menu design", "Kitchen management", "Food safety"],
+      "description": "Lead the pastry kitchen for the corporate cafeteria opening."
+    }
+  ]
+}

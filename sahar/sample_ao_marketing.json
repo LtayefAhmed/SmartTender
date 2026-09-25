@@ -1,0 +1,30 @@
+{
+  "project": "Product Launch Campaign",
+  "client": "Northwind Retail",
+  "profiles": [
+    {
+      "role": "Digital Marketing Manager",
+      "count": 1,
+      "skills": ["Social media strategy", "SEO", "Content marketing", "Campaign analytics", "Brand management"],
+      "description": "Own the go-to-market digital strategy across social, email, and paid channels."
+    },
+    {
+      "role": "Graphic Designer",
+      "count": 2,
+      "skills": ["Adobe Photoshop", "Adobe Illustrator", "Branding", "Typography"],
+      "description": "Produce campaign visuals, packaging mockups, and brand assets."
+    },
+    {
+      "role": "Data Analyst",
+      "count": 1,
+      "skills": ["SQL", "Excel", "Reporting", "A/B testing"],
+      "description": "Track campaign performance and turn it into actionable reporting."
+    },
+    {
+      "role": "Veterinary Surgeon",
+      "count": 1,
+      "skills": ["Animal surgery", "Veterinary medicine", "Anesthesiology"],
+      "description": "Oversee animal welfare for a pet-adoption tie-in event during the launch."
+    }
+  ]
+}

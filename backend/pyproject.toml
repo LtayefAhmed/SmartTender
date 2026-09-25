@@ -95,6 +95,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.1",
+    # The API test fixtures build an in-memory SQLite engine
+    # (sqlite+aiosqlite:///:memory:) so the suite never needs Postgres. The
+    # driver itself was never declared, so a fresh `pip install -e .[dev]`
+    # only worked if something else had already pulled it in transitively.
+    "aiosqlite>=0.20",
     "respx>=0.21",
     "freezegun>=1.4",
     "ruff>=0.3",
