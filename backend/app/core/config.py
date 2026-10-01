@@ -309,6 +309,15 @@ class VectorSettings(_Base):
     #: and a CV must never surface in a tender search by accident.
     tender_collection: str = "tender_passages"
     cv_collection: str = "cv_passages"
+    #: Passages of dossiers that were approved and sent. A third collection
+    #: for the same reason as the first two: it is searched on its own, it is
+    #: orders of magnitude smaller, and a past proposal surfacing inside a CV
+    #: search would attribute one consultant's work to another.
+    #:
+    #: Empty until a document is approved. That is the design, not an
+    #: oversight — the referential is the platform's memory of its own
+    #: validated output, so it cannot predate the first validation.
+    response_collection: str = "past_responses"
     #: Points written per request. Large enough to be efficient, small enough
     #: that one failed batch is cheap to retry.
     upsert_batch_size: int = 128

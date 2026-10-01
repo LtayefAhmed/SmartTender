@@ -14,6 +14,7 @@ import { Schedules } from "./pages/Schedules";
 import { Sources } from "./pages/Sources";
 import { Notifications } from "./pages/Notifications";
 import { Admin } from "./pages/Admin";
+import { Templates } from "./pages/Templates";
 import "./styles.css";
 
 const qc = new QueryClient({
@@ -36,6 +37,7 @@ const router = createBrowserRouter([
       { path: "schedules", element: <Schedules /> },
       { path: "sources", element: <Sources /> },
       { path: "notifications", element: <Notifications /> },
+      { path: "admin/gabarits", element: <Templates /> },
       { path: "admin", element: <Admin /> },
     ],
   },

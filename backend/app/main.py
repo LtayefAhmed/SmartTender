@@ -27,14 +27,18 @@ from app import __version__
 from app.api.errors import install_exception_handlers
 from app.api.routers import (
     admin,
+    approval,
     cvs,
+    documents,
     health,
     matching,
     notifications,
     profiles,
     schedules,
     scrape,
+    shortlists,
     sources,
+    templates,
     tenders,
     upload,
 )
@@ -200,6 +204,10 @@ def create_app() -> FastAPI:
     app.include_router(cvs.router)
     app.include_router(matching.router)
     app.include_router(profiles.router)
+    app.include_router(shortlists.router)
+    app.include_router(documents.router)
+    app.include_router(approval.router)
+    app.include_router(templates.router)
     app.include_router(tenders.router)
     app.include_router(schedules.router)
     app.include_router(sources.router)

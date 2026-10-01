@@ -51,6 +51,13 @@ dependencies = [
     # All pure-Python, no system dependencies.
     "pypdf>=4.0",
     "python-docx>=1.1",
+    # Document generation: a .docx carrying Jinja placeholders, filled from a
+    # render context. Templates are uploaded by the Bureau d'Études rather than
+    # written by us, which is the whole point — a new bailleur format is a file
+    # to drop, not a release to ship. It also means a template is untrusted
+    # input containing executable Jinja, so every render goes through a
+    # SandboxedEnvironment (see app/services/templates.py).
+    "docxtpl>=0.16",
     # Spreadsheets are not incidental in a procurement dossier: the BPU and the
     # DQE carry the price structure, and annexes named "Exigences, pénalités,
     # livrables et indicateurs" are the requirements matrix itself. The

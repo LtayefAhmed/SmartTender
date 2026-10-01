@@ -74,6 +74,7 @@ class VectorStore:
         self.timeout = settings.timeout_seconds
         self.tender_collection = settings.tender_collection
         self.cv_collection = settings.cv_collection
+        self.response_collection = settings.response_collection
         self.batch_size = settings.upsert_batch_size
         self._client: Any = None
         self._ready: set[str] = set()

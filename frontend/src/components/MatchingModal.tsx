@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { CandidateMatch, MatchResult } from "../api/types";
+import type { CandidateMatch, MatchResult, Shortlist, ShortlistPage } from "../api/types";
+import { ShortlistPanel } from "./ShortlistPanel";
 import { Badge, ErrorState, Loading } from "./ui";
+import { useToast } from "./toast";
 
 /**
  * CV matching, given the screen it deserves.
@@ -33,6 +35,10 @@ export function MatchingModal({
   onClose: () => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  //: Which capture is open, if any. `null` shows the live preview.
+  const [openShortlist, setOpenShortlist] = useState<string | null>(null);
+  const client = useQueryClient();
+  const toast = useToast();
 
   const query = useQuery({
     queryKey: ["candidates", tenderId],
@@ -42,15 +48,39 @@ export function MatchingModal({
     retry: false,
   });
 
+  // Captures already taken for this tender. Cheap — the listing omits the
+  // candidates and their evidence passages.
+  const captures = useQuery({
+    queryKey: ["shortlists", tenderId],
+    queryFn: () =>
+      api.get<ShortlistPage>("/shortlists", { tender_id: tenderId, page_size: 5 }),
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+  const capture = useMutation({
+    mutationFn: () => api.post<Shortlist>(`/tenders/${tenderId}/shortlist`, { limit: 20 }),
+    onSuccess: (data) => {
+      client.setQueryData(["shortlist", data.id], data);
+      client.invalidateQueries({ queryKey: ["shortlists", tenderId] });
+      setOpenShortlist(data.id);
+      toast.ok(
+        "Classement figé",
+        "Le score, les exigences et les poids sont enregistrés tels quels."
+      );
+    },
+    onError: (error: unknown) =>
+      toast.err(
+        "Impossible de figer",
+        error instanceof Error ? error.message : "L'opération a échoué."
+      ),
+  });
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  const data = query.data;
-  const ranked = (data?.candidates ?? []).filter((c) => !c.vetoed);
-  const vetoed = (data?.candidates ?? []).filter((c) => c.vetoed);
 
   return (
     <div className="modal-scrim" onClick={onClose}>
@@ -66,60 +96,182 @@ export function MatchingModal({
         </div>
 
         <div className="modal-body">
-          {query.isLoading && <Loading label="Analyse des exigences et comparaison des profils…" />}
-          {query.error && <ErrorState error={query.error} />}
-
-          {data && data.status !== "ok" && (
-            <div className="empty">
-              <div className="big">◇</div>
-              {data.message ?? "Cet appel d'offres n'a pas de texte exploitable."}
-            </div>
-          )}
-
-          {data && data.status === "ok" && (
-            <div className="stack" style={{ gap: 20 }}>
-              <Summary data={data} />
-
-              {data.structured_requirements && (
-                <Requirements structured={data.structured_requirements} />
-              )}
-
-              {ranked.length > 0 ? (
-                <div className="card">
-                  <div className="card-title">
-                    Score par profil
-                    <span className="hint">
-                      longueur = score · segments = origine du score
-                    </span>
-                  </div>
-                  <Chart candidates={ranked} />
-                </div>
-              ) : (
-                <div className="card">
-                  <div className="empty" style={{ padding: "28px 20px" }}>
-                    Aucun profil ne franchit le verrou technologique.
-                  </div>
-                </div>
-              )}
-
-              {ranked.map((candidate, rank) => (
-                <Profile
-                  key={candidate.cv_id}
-                  rank={rank + 1}
-                  candidate={candidate}
-                  open={expanded === candidate.cv_id}
-                  onToggle={() =>
-                    setExpanded(expanded === candidate.cv_id ? null : candidate.cv_id)
-                  }
-                  requirements={data.requirements}
-                />
-              ))}
-
-              {vetoed.length > 0 && <Vetoed candidates={vetoed} />}
-            </div>
+          {openShortlist ? (
+            <ShortlistPanel
+              shortlistId={openShortlist}
+              onBack={() => setOpenShortlist(null)}
+            />
+          ) : (
+            <PreviewBody
+              query={query}
+              expanded={expanded}
+              setExpanded={setExpanded}
+              captures={captures.data?.items ?? []}
+              onOpenCapture={setOpenShortlist}
+              onCapture={() => capture.mutate()}
+              capturing={capture.isPending}
+            />
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/**
+ * The live ranking.
+ *
+ * This is a *preview*, and the wording on the button says so. Freezing re-runs
+ * the ranking server-side rather than posting back what is on screen: a capture
+ * is an audit record, and an audit record the client supplied is not one. The
+ * two agree in practice — ranking is deterministic given the same index and
+ * weights — and when they disagree, the capture is the one that is true.
+ */
+function PreviewBody({
+  query,
+  expanded,
+  setExpanded,
+  captures,
+  onOpenCapture,
+  onCapture,
+  capturing,
+}: {
+  query: { isLoading: boolean; error: unknown; data: MatchResult | undefined };
+  expanded: string | null;
+  setExpanded: (value: string | null) => void;
+  captures: ShortlistPage["items"];
+  onOpenCapture: (id: string) => void;
+  onCapture: () => void;
+  capturing: boolean;
+}) {
+  const data = query.data;
+  const ranked = (data?.candidates ?? []).filter((c) => !c.vetoed);
+  const vetoed = (data?.candidates ?? []).filter((c) => c.vetoed);
+
+  return (
+    <>
+      {query.isLoading && <Loading label="Analyse des exigences et comparaison des profils…" />}
+      {query.error && <ErrorState error={query.error} />}
+
+      {data && data.status !== "ok" && (
+        <div className="empty">
+          <div className="big">◇</div>
+          {data.message ?? "Cet appel d'offres n'a pas de texte exploitable."}
+        </div>
+      )}
+
+      {data && data.status === "ok" && (
+        <div className="stack" style={{ gap: 20 }}>
+          <CaptureBar
+            captures={captures}
+            onOpenCapture={onOpenCapture}
+            onCapture={onCapture}
+            capturing={capturing}
+          />
+
+          <Summary data={data} />
+
+          {data.structured_requirements && (
+            <Requirements structured={data.structured_requirements} />
+          )}
+
+          {ranked.length > 0 ? (
+            <div className="card">
+              <div className="card-title">
+                Score par profil
+                <span className="hint">
+                  longueur = score · segments = origine du score
+                </span>
+              </div>
+              <Chart candidates={ranked} />
+            </div>
+          ) : (
+            <div className="card">
+              <div className="empty" style={{ padding: "28px 20px" }}>
+                Aucun profil ne franchit le verrou technologique.
+              </div>
+            </div>
+          )}
+
+          {ranked.map((candidate, rank) => (
+            <Profile
+              key={candidate.cv_id}
+              rank={rank + 1}
+              candidate={candidate}
+              open={expanded === candidate.cv_id}
+              onToggle={() =>
+                setExpanded(expanded === candidate.cv_id ? null : candidate.cv_id)
+              }
+              requirements={data.requirements}
+            />
+          ))}
+
+          {vetoed.length > 0 && <Vetoed candidates={vetoed} />}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/**
+ * The bridge from browsing to deciding.
+ *
+ * Placed above the ranking rather than below it, because it changes how the
+ * ranking should be read: what follows is a preview until someone freezes it.
+ */
+function CaptureBar({
+  captures,
+  onOpenCapture,
+  onCapture,
+  capturing,
+}: {
+  captures: ShortlistPage["items"];
+  onOpenCapture: (id: string) => void;
+  onCapture: () => void;
+  capturing: boolean;
+}) {
+  return (
+    <div className="card">
+      <div className="row spread" style={{ gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>Sélection des profils</div>
+          <div className="tiny muted">
+            Ce classement est recalculé à chaque ouverture. Le figer enregistre les
+            scores <em>et</em> les exigences qui les ont produits — c'est ce qui rend
+            une décision opposable plus tard.
+          </div>
+        </div>
+        <button className="btn sm primary" disabled={capturing} onClick={onCapture}>
+          {capturing ? "…" : "Figer cette sélection"}
+        </button>
+      </div>
+
+      {captures.length > 0 && (
+        <>
+          <div className="divider" style={{ margin: "12px 0" }} />
+          <div className="stack" style={{ gap: 6 }}>
+            {captures.map((item) => (
+              <div key={item.id} className="row spread" style={{ gap: 10 }}>
+                <div className="row" style={{ gap: 8, minWidth: 0 }}>
+                  <Badge color={item.status === "validated" ? "teal" : "blue"}>
+                    {item.status === "validated" ? "validée" : "en cours"}
+                  </Badge>
+                  <span className="tiny muted">
+                    {item.created_at ? new Date(item.created_at).toLocaleString("fr-FR") : ""}
+                    {" · "}
+                    {item.decisions.retained ?? 0} retenus
+                  </span>
+                </div>
+                <button className="btn sm ghost" onClick={() => onOpenCapture(item.id)}>
+                  Ouvrir
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

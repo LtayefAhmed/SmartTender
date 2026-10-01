@@ -158,6 +158,7 @@ def create_celery_app() -> Celery:
             "app.workers.tasks.cvs",
             "app.workers.tasks.indexing",
             "app.workers.tasks.matching",
+            "app.workers.tasks.generation",
             "app.workers.tasks.profiles",
             "app.workers.tasks.notifications",
             "app.workers.tasks.maintenance",

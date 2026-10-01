@@ -99,6 +99,18 @@ class CV(Base, TimestampMixin):
         JSONType, nullable=False, server_default="{}", default=dict
     )
 
+    #: The dated career timeline: roles and degrees, with their dates, read
+    #: once at import. This is what a funder's CV form is built around, and
+    #: what the criteria above cannot answer — "knows Java" is not "was a Java
+    #: developer at X from 2019 to 2022".
+    #:
+    #: Also carries its own ``status``, because an empty timeline has several
+    #: causes a reader must be able to tell apart: no text, no recognisable
+    #: sections, or a CV whose employers were anonymised before we ever saw it.
+    structure: Mapped[dict[str, Any]] = mapped_column(
+        JSONType, nullable=False, server_default="{}", default=dict
+    )
+
     #: The readable text, and how it was obtained. A stored CV nothing has read
     #: is a file, not a profile: matching compares requirements against skills,
     #: and skills only exist once the PDF has become text.

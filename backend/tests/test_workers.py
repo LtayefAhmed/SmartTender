@@ -872,3 +872,39 @@ class TestTheModelWorkerVouchesForItself:
         module._on_celeryd_init(sender="support@c0ffee")
 
         assert marker.exists()
+
+
+class TestAQueueIsSeveralRedisKeys:
+    """Celery emulates priorities on Redis by giving each level its own list.
+    A queue called `scraping` is really up to ten keys, and the depth metric
+    counted only the first — so it read zero while three scraping jobs waited
+    in `scraping\x06\x165`, and the saturation alert could not fire because the
+    number it watches was structurally incapable of rising."""
+
+    def test_priority_zero_keeps_the_bare_name(self):
+        from app.workers.queues import redis_keys_for
+
+        assert redis_keys_for("scraping")[0] == "scraping"
+
+    def test_every_other_level_gets_its_own_key(self):
+        from app.workers.queues import redis_keys_for
+
+        keys = redis_keys_for("scraping")
+
+        assert len(keys) == 10
+        assert "scraping\x06\x165" in keys
+
+    def test_the_separator_is_two_invisible_characters(self):
+        """Named in the code because it is a trap: a Redis key listing prints
+        `scraping\x06\x165` as "scraping5", and `LLEN scraping5` then queries a
+        different, empty key — which is exactly how this was misdiagnosed."""
+        from app.workers.queues import PRIORITY_SEPARATOR, redis_keys_for
+
+        assert PRIORITY_SEPARATOR == "\x06\x16"
+        assert not PRIORITY_SEPARATOR.isprintable()
+        assert redis_keys_for("ai", steps=[5]) == ["ai", "ai\x06\x165"]
+
+    def test_a_deployment_without_priorities_reads_one_key(self):
+        from app.workers.queues import redis_keys_for
+
+        assert redis_keys_for("scraping", steps=[0]) == ["scraping"]

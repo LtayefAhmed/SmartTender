@@ -28,9 +28,21 @@ from __future__ import annotations
 
 from kombu import Exchange, Queue
 
-__all__ = ["DEFAULT_QUEUE", "QUEUES", "QUEUE_NAMES", "TASK_ROUTES"]
+__all__ = [
+    "DEFAULT_QUEUE",
+    "QUEUES",
+    "QUEUE_NAMES",
+    "TASK_ROUTES",
+    "redis_keys_for",
+]
 
 DEFAULT_QUEUE = "default"
+
+#: Kombu's default separator between a queue name and its priority. Two
+#: non-printing control characters, which is a trap worth naming: a Redis key
+#: listing shows `scraping\x06\x165` as "scraping5", and `LLEN scraping5` then
+#: queries a *different*, empty key. An hour was spent on that.
+PRIORITY_SEPARATOR = "\x06\x16"
 
 _exchange = Exchange("smarttender", type="direct", durable=True)
 
@@ -48,6 +60,31 @@ QUEUE_NAMES = (
 QUEUES = tuple(
     Queue(name, _exchange, routing_key=name, durable=True) for name in QUEUE_NAMES
 )
+
+
+def redis_keys_for(
+    name: str, *, steps: list[int] | None = None, sep: str | None = None
+) -> list[str]:
+    """Every Redis key one logical queue is spread across.
+
+    Celery emulates priorities on Redis by giving each level its own list:
+    priority 0 keeps the bare queue name, and every other level appends the
+    separator and the number. So a single queue called ``scraping`` is really
+    up to ten keys.
+
+    This exists because the queue-depth metric counted only the bare name. Once
+    priorities were switched on, the default priority became 5 — so almost
+    every message went to a key nobody was measuring, and the dashboard read
+    zero while work piled up. "The platform's single best saturation signal"
+    was blind to most of the traffic, which is how three scraping jobs sat
+    untouched for an hour with nothing anywhere reporting a problem.
+    """
+    from app.workers.celery_app import celery_app
+
+    options = celery_app.conf.broker_transport_options or {}
+    levels = steps if steps is not None else (options.get("priority_steps") or [0])
+    separator = sep if sep is not None else options.get("sep", PRIORITY_SEPARATOR)
+    return [name] + [f"{name}{separator}{level}" for level in levels if level]
 
 #: Glob patterns, evaluated in order by Celery. Keeping routing declarative
 #: here (rather than as a decorator argument on each task) means the topology

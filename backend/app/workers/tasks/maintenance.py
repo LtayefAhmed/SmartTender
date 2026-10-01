@@ -298,7 +298,7 @@ def collect_queue_metrics(self: PipelineTask) -> dict[str, int]:
     import redis
 
     from app.core.config import get_settings
-    from app.workers.queues import QUEUE_NAMES
+    from app.workers.queues import QUEUE_NAMES, redis_keys_for
 
     settings = get_settings()
     depths: dict[str, int] = {}
@@ -307,7 +307,12 @@ def collect_queue_metrics(self: PipelineTask) -> dict[str, int]:
             settings.redis.broker_url, socket_timeout=settings.redis.socket_timeout_seconds
         )
         for name in QUEUE_NAMES:
-            depth = int(client.llen(name) or 0)
+            # Summed across every priority level, not just the bare key. A
+            # queue is one name and up to ten Redis lists; counting only the
+            # first reported zero while three jobs waited in `scraping\x06\x165`
+            # — and the saturation alert never fired because the number it
+            # watches was structurally incapable of rising.
+            depth = sum(int(client.llen(key) or 0) for key in redis_keys_for(name))
             depths[name] = depth
             queue_size.labels(queue=name).set(depth)
         client.close()

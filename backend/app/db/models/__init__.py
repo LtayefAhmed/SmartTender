@@ -6,23 +6,30 @@ individual modules — anywhere metadata completeness matters.
 """
 
 from app.db.models.cv import CV
+from app.db.models.document import GeneratedDocument
 from app.db.models.job import ConnectorRun, ScrapingJob
 from app.db.models.log import ExecutionLog
 from app.db.models.notification import Notification, UserPreference
 from app.db.models.schedule import Schedule, ScheduleChangeSentinel
+from app.db.models.shortlist import Shortlist, ShortlistEntry
 from app.db.models.source import Source
 from app.db.models.submission import Submission
+from app.db.models.template import DocumentTemplate
 from app.db.models.tender import DuplicateRecord, Tender, TenderDocument, TenderScore
 
 __all__ = [
     "CV",
     "ConnectorRun",
+    "DocumentTemplate",
     "DuplicateRecord",
     "ExecutionLog",
+    "GeneratedDocument",
     "Notification",
     "Schedule",
     "ScheduleChangeSentinel",
     "ScrapingJob",
+    "Shortlist",
+    "ShortlistEntry",
     "Source",
     "Submission",
     "Tender",

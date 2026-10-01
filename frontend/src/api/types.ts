@@ -477,3 +477,197 @@ export interface JobDescriptionReading {
   education_min: number | null;
   text: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Shortlists — a ranking frozen at the moment a human looked at it.           */
+/*                                                                            */
+/* The matching endpoint recomputes on every call, which is right for browsing */
+/* and wrong as an input to document generation: a re-import or a weight change */
+/* between the approval and the generation would silently change the list. A   */
+/* capture stores the answer *and* the question, so a later disagreement is    */
+/* visible instead of invisible.                                              */
+
+export type ShortlistDecision = "pending" | "retained" | "rejected";
+export type ShortlistStatus = "open" | "validated" | "archived";
+
+export interface ShortlistEntry {
+  id: string;
+  cv_id: string | null;
+  rank: number;
+  /** The label as it was on screen when the decision was taken. Copied rather
+   *  than joined: a CV re-imported under a new name must not rewrite history. */
+  label: string;
+  filename: string | null;
+  score: number;
+  similarity: number;
+  coverage: number;
+  technology_ratio: number;
+  matched_technologies: string[];
+  missing_technologies: string[];
+  /** Kept alongside a retention rather than cleared by it, so an override of
+   *  the ranking is visible as an override. */
+  vetoed: boolean;
+  veto_reason: string | null;
+  evidence: { requirement: number; score: number; passage: string }[];
+  decision: ShortlistDecision;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+}
+
+/** A capture without its candidates — what a listing returns. */
+export interface ShortlistSummary {
+  id: string;
+  tender_id: string | null;
+  tender_title: string | null;
+  label: string | null;
+  status: ShortlistStatus;
+  required_technologies: string[];
+  structured_requirements: MatchResult["structured_requirements"];
+  weights: Record<string, number | string>;
+  /** Over everything considered, not over the stored slice. */
+  kept_total: number;
+  vetoed_total: number;
+  decisions: Record<ShortlistDecision, number>;
+  created_by: string | null;
+  created_at: string | null;
+  validated_by: string | null;
+  validated_at: string | null;
+  note: string | null;
+}
+
+export interface Shortlist extends ShortlistSummary {
+  requirements: { position: number; document: string | null; text: string }[];
+  entries: ShortlistEntry[];
+}
+
+export interface ShortlistPage {
+  total: number;
+  page: number;
+  page_size: number;
+  items: ShortlistSummary[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Templates — the document library, held as data.                            */
+/*                                                                            */
+/* Adding a funder's format is dropping a Word file, not shipping a release.   */
+/* The placeholders a file asks for are resolved at upload and checked against */
+/* what the render context can supply, so a template demanding the unknown is  */
+/* refused while its author is still holding it.                              */
+
+export type TemplateKind =
+  | "cv"
+  | "fiche_expert"
+  | "lettre"
+  | "matrice_conformite"
+  | "formulaire_tech"
+  | "formulaire_fin";
+
+export interface DocumentTemplate {
+  id: string;
+  key: string;
+  label: string;
+  kind: TemplateKind;
+  /** The funding institution whose format this is. Null for the firm's own
+   *  template — the default, and the only case measured in our corpus so far. */
+  funder: string | null;
+  version: number;
+  is_active: boolean;
+  original_filename: string;
+  size_bytes: number;
+  variables: string[];
+  uploaded_by: string | null;
+  notes: string | null;
+  created_at: string | null;
+}
+
+export interface TemplateVariable {
+  name: string;
+  /** text · list (of strings) · records (looped over, with fields) */
+  kind: "text" | "list" | "records";
+  label: string;
+  example: string;
+  /** False when the platform declares the name but does not yet produce it:
+   *  accepted in a template, rendered empty, filled when its source lands. */
+  available: boolean;
+}
+
+export interface TemplateVariables {
+  kind: TemplateKind;
+  variables: TemplateVariable[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Produced documents — the last link of the chain.                           */
+
+export type GeneratedDocumentStatus = "draft" | "approved" | "superseded";
+
+export interface GeneratedDocument {
+  id: string;
+  /** The person the document is about, as printed on it. */
+  label: string;
+  filename: string;
+  kind: string;
+  /** Regenerating supersedes the previous version rather than replacing it:
+   *  a document already circulated has to stay explainable. */
+  version: number;
+  status: GeneratedDocumentStatus;
+  /** A draft says so on its own face. A draft that looks final gets sent. */
+  watermarked: boolean;
+  size_bytes: number;
+  /** Which template version produced it — copied, so a retired template can
+   *  still be named. */
+  template: string | null;
+  /** Variables the data could not fill. Shown rather than hidden: a reviewer
+   *  should learn about a blank section here, not in a submitted dossier. */
+  empty_fields: string[];
+  /** What the reformulation pass did. `llm_used: false` means the wording is
+   *  purely what the CV said — the deterministic path, which can never be
+   *  wrong. A reviewer signing the document is entitled to know which. */
+  adaptation: {
+    status?: string;
+    llm_used?: boolean;
+    reformulated?: number;
+    rejected?: number;
+    /** Terms the anti-invention guard caught and refused. The audit trail of
+     *  the rule actually firing. */
+    invented_terms?: string[];
+    /** Sentences kept but resting on thin support in the source CV. Not
+     *  provably wrong — which is why they are still in the document — and
+     *  named so the reviewer reads them first. */
+    flagged?: string[];
+  };
+  generated_by: string | null;
+  created_at: string | null;
+  /** The second human lock. A document leaves the platform only once a person
+   *  has signed it, and the watermark is removed from the file itself —
+   *  not merely from a column. */
+  /** The automatic review of this file. A document that passed and a
+   *  document nobody checked are different things. */
+  qa?: {
+    passed?: boolean;
+    blocking?: number;
+    warnings?: number;
+    repaired_sections?: string[];
+    findings?: { check: string; severity: string; section: string; message: string }[];
+  };
+  approved_by?: string | null;
+  approved_at?: string | null;
+  decision_note?: string | null;
+}
+
+export interface GenerateOptions {
+  /** A CV is produced per retained profile; a compliance matrix is one
+   *  document for the whole dossier. */
+  kind: TemplateKind;
+  adapt: boolean;
+}
+
+export interface GenerationResult {
+  produced: GeneratedDocument[];
+  /** Retained profiles that yielded nothing, with the reason. A dossier short
+   *  of one expert is not something to report by silence. */
+  refused: { label: string; reason: string }[];
+  template: string;
+}

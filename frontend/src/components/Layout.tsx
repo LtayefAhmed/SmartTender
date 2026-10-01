@@ -34,6 +34,10 @@ const NAV = [
     items: [
       { to: "/notifications", icon: "◉", label: "Notifications", badge: true },
       { to: "/admin", icon: "⚙", label: "Administration" },
+      // Configuration, not a daily destination. A new funder format is
+      // uploaded once; a bid manager never opens this screen. Sitting in the
+      // main navigation beside "Appels d'offres" it read as an everyday task.
+      { to: "/admin/gabarits", icon: "▧", label: "Gabarits de documents" },
     ],
   },
 ];

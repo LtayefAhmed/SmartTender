@@ -48,6 +48,7 @@ def extract_cv_text(self: PipelineTask, cv_id: str) -> dict[str, Any]:
     row says so instead of pretending otherwise.
     """
     from app.services.cv_criteria import extract_criteria
+    from app.services.cv_structure import extract_structure
     from app.services.extraction import clean_extracted_text, get_extractor
     from app.services.profiles import extract_identity
     from app.services.storage import get_storage
@@ -104,6 +105,13 @@ def extract_cv_text(self: PipelineTask, cv_id: str) -> dict[str, Any]:
             # documents to be parsed, and the answer does not change between
             # two searches.
             row.criteria = extract_criteria(text).as_dict()
+
+            # The dated timeline, read in the same pass. It costs a few
+            # milliseconds against an extraction measured in seconds, and
+            # reading it here rather than at generation time is what keeps a
+            # produced CV under the fifteen-second target.
+            structure = extract_structure(text)
+            row.structure = structure.to_dict()
             outcome.update(
                 identity=identity.source,
                 label=identity.label[:60],
@@ -111,6 +119,8 @@ def extract_cv_text(self: PipelineTask, cv_id: str) -> dict[str, Any]:
                 chars=row.extraction_chars,
                 method=result.method,
                 truncated=truncated,
+                experiences=len(structure.experiences),
+                formations=len(structure.formations),
             )
 
         logger.info("cv.extracted", **{k: v for k, v in outcome.items() if k != "cv_id"})
@@ -155,3 +165,55 @@ def extract_pending_cvs(self: PipelineTask, limit: int = 100) -> dict[str, Any]:
 
     logger.info("cv.backlog_dispatched", count=len(pending))
     return {"dispatched": len(pending)}
+
+
+@celery_app.task(
+    base=PipelineTask,
+    bind=True,
+    name="app.workers.tasks.cvs.structure_pending_cvs",
+    queue="parsing",
+    max_retries=0,
+)
+def structure_pending_cvs(self: PipelineTask, limit: int = 1_000) -> dict[str, Any]:
+    """Read the career timeline of CVs extracted before it existed.
+
+    Runs over stored text rather than re-extracting. Re-running the OCR pass to
+    recover a field the text already contains would spend hours of CPU and, on
+    scanned CVs, produce a *different* text than the one already indexed — so
+    the timeline would describe a document nobody else in the platform is
+    looking at.
+
+    On the ``parsing`` queue, not ``ai``: this is regular expressions over text
+    a database row already holds. Nothing here loads a model, so nothing here
+    belongs on the single-process worker that owns one.
+
+    Idempotent: a CV whose structure is already read is not selected.
+    """
+    from app.services.cv_structure import extract_structure
+
+    processed = 0
+    with_experience = 0
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(CV.id)
+            .where(CV.extraction_chars > 0)
+            .order_by(CV.created_at)
+            .limit(limit)
+        ).all()
+        candidates = [str(row[0]) for row in rows]
+
+    for cv_id in candidates:
+        with session_scope() as session:
+            row = session.get(CV, uuid_module.UUID(cv_id))
+            if row is None or (row.structure or {}).get("status"):
+                continue
+            structure = extract_structure(row.extracted_text)
+            row.structure = structure.to_dict()
+            processed += 1
+            with_experience += bool(structure.experiences)
+
+    logger.info(
+        "cv.structure_backfilled", processed=processed, with_experience=with_experience
+    )
+    return {"processed": processed, "with_experience": with_experience}

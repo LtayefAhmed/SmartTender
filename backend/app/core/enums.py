@@ -18,6 +18,7 @@ __all__ = [
     "DuplicateStrategy",
     "EntryPoint",
     "FetchStrategy",
+    "GeneratedDocumentStatus",
     "JobStatus",
     "JobTrigger",
     "NotificationChannel",
@@ -26,9 +27,12 @@ __all__ = [
     "ProcurementType",
     "RelevanceBand",
     "ScheduleKind",
+    "ShortlistDecision",
+    "ShortlistStatus",
     "SourceHealth",
     "SubmissionOutcome",
     "SubmissionStatus",
+    "TemplateKind",
     "TenderPipelineState",
     "TenderStatus",
     "coerce",
@@ -224,3 +228,70 @@ class FetchStrategy(_StrEnum):
     DYNAMIC = "dynamic"
     API = "api"
     FIXTURE = "fixture"
+
+
+class ShortlistStatus(_StrEnum):
+    """Where a frozen candidate ranking stands.
+
+    ``OPEN`` is a ranking captured but not yet judged. ``VALIDATED`` is the
+    human lock the parcours calls for: past it, the selection is the input to
+    document generation and must no longer move under the generator's feet.
+    """
+
+    OPEN = "open"
+    VALIDATED = "validated"
+    #: Superseded by a later capture, or abandoned. Kept rather than deleted:
+    #: a selection someone acted on is part of the audit trail even when the
+    #: bid was dropped.
+    ARCHIVED = "archived"
+
+
+class ShortlistDecision(_StrEnum):
+    """What a human decided about one candidate.
+
+    ``PENDING`` is not a soft "no". A profile nobody looked at and a profile
+    somebody rejected are different facts, and generating documents for the
+    first would be acting on a decision that was never taken.
+    """
+
+    PENDING = "pending"
+    RETAINED = "retained"
+    REJECTED = "rejected"
+
+
+class TemplateKind(_StrEnum):
+    """What a .docx template produces.
+
+    The list comes from Inetum's own solution slide and from the parcours: a
+    CV in the funder's format, an expert sheet, the technical and financial
+    forms, the compliance matrix, the covering letter.
+
+    ``FINANCIAL_FORM`` is declared and deliberately not implemented. A
+    financial form needs unit prices, day rates and a bill of quantities;
+    nothing in the platform holds any of that today. Naming it here without
+    the data behind it would promise a document we cannot fill.
+    """
+
+    CV = "cv"
+    EXPERT_SHEET = "fiche_expert"
+    COVER_LETTER = "lettre"
+    COMPLIANCE_MATRIX = "matrice_conformite"
+    TECHNICAL_FORM = "formulaire_tech"
+    FINANCIAL_FORM = "formulaire_fin"
+
+
+class GeneratedDocumentStatus(_StrEnum):
+    """Where a produced document stands.
+
+    ``DRAFT`` carries the watermark on its face. Only an explicit approval
+    removes it, and only an approved document leaves the platform — the human
+    lock the parcours puts before export.
+
+    ``SUPERSEDED`` is what a regeneration does to the version before it: kept,
+    not deleted, because a document someone already circulated has to remain
+    explainable.
+    """
+
+    DRAFT = "draft"
+    APPROVED = "approved"
+    SUPERSEDED = "superseded"

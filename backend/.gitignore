@@ -42,3 +42,9 @@ logs/
 # TLS client certificates (TUNTRUST) — never commit these.
 certs/*
 !certs/.gitkeep
+
+# Generated templates. `scripts/build_default_template.py` produces the default
+# CV gabarit; a .docx in git is an opaque blob nobody can review, which is the
+# whole reason the layout lives in the script instead.
+config/templates/*.docx
+config/templates/*.docx.part
