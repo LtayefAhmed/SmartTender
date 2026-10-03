@@ -18,6 +18,15 @@ from app.services.llm import LlmResult, MistralClient
 from app.services.refinement import refine_ocr_text, structure_requirements
 
 
+def _answer(content: str) -> tuple[str, dict[str, int | str]]:
+    """What a stubbed `_post` returns.
+
+    `_post` reports the content and the call's cost together, because the API
+    sends both and the audit trail needs the second. Stubs go through here so
+    the shape lives in one place.
+    """
+    return content, {"tokens_in": 0, "tokens_out": 0, "model": "stub"}
+
 @pytest.fixture()
 def configured(monkeypatch):
     """A client with a key, scoped to tenders only, and no network."""
@@ -39,7 +48,7 @@ def _capture(client, monkeypatch, reply: str = "réponse"):
     def _post(system, user, max_tokens):
         sent["system"] = system
         sent["user"] = user
-        return reply
+        return _answer(reply)
 
     monkeypatch.setattr(client, "_post", _post)
     return sent
@@ -179,7 +188,9 @@ class TestRefinementNeverLosesContent:
         """
         client = configured(scope="tenders")
         monkeypatch.setattr("app.services.llm.get_llm", lambda: client)
-        monkeypatch.setattr(client, "_post", lambda s, u, m: "Résumé très court.")
+        monkeypatch.setattr(
+            client, "_post", lambda s, u, m: _answer("Résumé très court.")
+        )
 
         original = "Le titulaire doit maîtriser Docker et Kubernetes. " * 20
         result = refine_ocr_text(original, kind="tender")
@@ -193,7 +204,7 @@ class TestRefinementNeverLosesContent:
         monkeypatch.setattr("app.services.llm.get_llm", lambda: client)
         original = "Le titulaire doit maitriser Docker. " * 20
         cleaned = original.replace("maitriser", "maîtriser")
-        monkeypatch.setattr(client, "_post", lambda s, u, m: cleaned)
+        monkeypatch.setattr(client, "_post", lambda s, u, m: _answer(cleaned))
 
         result = refine_ocr_text(original, kind="tender")
 
@@ -226,7 +237,9 @@ class TestStructuredRequirements:
         monkeypatch.setattr(
             client,
             "_post",
-            lambda s, u, m: '{"technologies": ["Docker", " "], "experience_min_annees": 5}',
+            lambda s, u, m: _answer(
+                '{"technologies": ["Docker", " "], "experience_min_annees": 5}'
+            ),
         )
 
         parsed = structure_requirements("Le titulaire doit " + "x" * 100, kind="tender")
@@ -257,7 +270,7 @@ class TestAModelAnsweringInTheWrongShape:
         monkeypatch.setattr(
             client,
             "_post",
-            lambda s, u, m: (
+            lambda s, u, m: _answer(
                 '{"profils": [{"intitule": "Expert RGAA", "niveau": "avere"}, '
                 '"Developpeur"]}'
             ),
@@ -274,7 +287,9 @@ class TestAModelAnsweringInTheWrongShape:
         monkeypatch.setattr("app.services.llm.get_llm", lambda: client)
         long_value = "x" * 200
         monkeypatch.setattr(
-            client, "_post", lambda s, u, m: '{"technologies": ["' + long_value + '"]}'
+            client,
+            "_post",
+            lambda s, u, m: _answer('{"technologies": ["' + long_value + '"]}'),
         )
 
         parsed = structure_requirements("Le titulaire doit " + "y" * 100)
@@ -285,7 +300,9 @@ class TestAModelAnsweringInTheWrongShape:
         client = configured(scope="tenders")
         monkeypatch.setattr("app.services.llm.get_llm", lambda: client)
         monkeypatch.setattr(
-            client, "_post", lambda s, u, m: '{"technologies": ["Docker", "Docker"]}'
+            client,
+            "_post",
+            lambda s, u, m: _answer('{"technologies": ["Docker", "Docker"]}'),
         )
 
         parsed = structure_requirements("Le titulaire doit " + "x" * 100)

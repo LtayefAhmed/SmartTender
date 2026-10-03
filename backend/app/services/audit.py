@@ -23,7 +23,7 @@ from app.db.models.log import ExecutionLog
 
 logger = get_logger(__name__)
 
-__all__ = ["record_error", "record_event"]
+__all__ = ["build_event", "record_error", "record_event"]
 
 _MAX_CONTEXT_CHARS = 8000
 
@@ -36,6 +36,65 @@ def _coerce_uuid(value: Any) -> uuid_module.UUID | None:
     try:
         return uuid_module.UUID(str(value))
     except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def build_event(
+    event: str,
+    *,
+    level: str = "INFO",
+    stage: PipelineStage | str | None = None,
+    connector: str | None = None,
+    tender_id: Any = None,
+    job_id: Any = None,
+    run_id: Any = None,
+    url: str | None = None,
+    message: str | None = None,
+    duration_ms: float | None = None,
+    error_type: str | None = None,
+    traceback: str | None = None,
+    actor: str | None = None,
+    context: dict[str, Any] | None = None,
+) -> ExecutionLog | None:
+    """The row, without writing it.
+
+    Split out because the API runs on an async session and this table is
+    written from both sides. Building and adding are separate so the caller
+    decides which session it has — rather than the audit layer guessing, or
+    module 3 going untraced because the signatures did not line up.
+    """
+    try:
+        ambient = current_context()
+        payload = redact(context or {})
+        serialized = str(payload)
+        if len(serialized) > _MAX_CONTEXT_CHARS:
+            payload = {
+                "truncated": True,
+                "preview": serialized[:1000],
+                "original_size": len(serialized),
+            }
+        return ExecutionLog(
+            level=level.upper(),
+            event=event,
+            stage=stage.value if isinstance(stage, PipelineStage) else stage,
+            connector=connector or ambient.get("connector"),
+            tender_id=_coerce_uuid(tender_id or ambient.get("tender_uuid")),
+            job_id=_coerce_uuid(job_id or ambient.get("job_id")),
+            run_id=_coerce_uuid(run_id),
+            task_id=ambient.get("task_id"),
+            correlation_id=ambient.get("correlation_id") or ambient.get("request_id"),
+            actor=actor,
+            url=redact_url(url),
+            message=(message or "")[:4000] or None,
+            duration_ms=duration_ms,
+            error_type=error_type,
+            traceback=(traceback or "")[:8000] or None,
+            context=payload,
+        )
+    except Exception as exc:
+        # An audit row that cannot be built must never take down the action it
+        # was describing. The action is the point; the trail is the record.
+        logger.warning("audit.build_failed", event=event, error=str(exc))
         return None
 
 

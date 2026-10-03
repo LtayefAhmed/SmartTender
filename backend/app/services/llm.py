@@ -52,6 +52,16 @@ class LlmResult:
     ok: bool
     content: str = ""
     reason: str | None = None
+    #: Tokens the call consumed, as the API reported them. Read rather than
+    #: estimated: this is the number the audit trail needs and the one that
+    #: bounds what the LLM layer costs. The response carried it from the
+    #: first call and it was being discarded.
+    tokens_in: int = 0
+    tokens_out: int = 0
+    #: Which model answered. A document produced six months ago was produced
+    #: by a specific one, and "mistral-small-latest" will not mean then what
+    #: it means now.
+    model: str | None = None
     #: Placeholders substituted before sending. Surfaced so a run can be shown
     #: to have been anonymised, without recording what was removed.
     redactions: dict[str, int] | None = None
@@ -111,7 +121,7 @@ class MistralClient:
         truncated = len(report.text) > settings.max_input_chars
 
         try:
-            content = self._post(system, payload_text, max_tokens)
+            content, usage = self._post(system, payload_text, max_tokens)
         except Exception as exc:
             # Every failure lands here and looks the same to the caller, which
             # is the point: the deterministic result is kept either way.
@@ -130,11 +140,14 @@ class MistralClient:
             # rather than remove it.
             redactions=report.counts,
             chars_received=len(content),
+            **usage,
         )
-        return LlmResult(ok=True, content=content, redactions=report.counts)
+        return LlmResult(
+            ok=True, content=content, redactions=report.counts, **usage
+        )
 
     # ------------------------------------------------------------------
-    def _post(self, system: str, user: str, max_tokens: int) -> str:
+    def _post(self, system: str, user: str, max_tokens: int) -> tuple[str, dict[str, Any]]:
         import httpx
 
         settings = self.settings
@@ -157,7 +170,15 @@ class MistralClient:
         )
         response.raise_for_status()
         body = response.json()
-        return str(body["choices"][0]["message"]["content"] or "")
+        usage = body.get("usage") or {}
+        return (
+            str(body["choices"][0]["message"]["content"] or ""),
+            {
+                "tokens_in": int(usage.get("prompt_tokens") or 0),
+                "tokens_out": int(usage.get("completion_tokens") or 0),
+                "model": str(body.get("model") or settings.model),
+            },
+        )
 
     def health(self) -> LlmResult:
         """One cheap call, to prove the key works before anything depends on it."""

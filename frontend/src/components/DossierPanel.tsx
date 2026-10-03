@@ -43,6 +43,28 @@ export function DossierPanel({
   //: contractual file is a choice someone makes, not a default they inherit.
   const [adapt, setAdapt] = useState(false);
   const [kind, setKind] = useState<TemplateKind>("cv");
+
+  const exportDossier = useMutation({
+    mutationFn: () =>
+      api.post<{ url: string; filename: string; pieces: number }>(
+        `/shortlists/${shortlistId}/export`,
+        {}
+      ),
+    onSuccess: (result) => {
+      toast.ok(
+        `Dossier exporté — ${result.pieces} pièce(s)`,
+        "Lien signé à durée limitée, manifeste inclus dans l'archive."
+      );
+      window.open(result.url, "_blank", "noopener");
+    },
+    // The refusal is the useful message here: it names how many drafts are
+    // still waiting, which is exactly what has to happen next.
+    onError: (error: unknown) =>
+      toast.err(
+        "Export impossible",
+        error instanceof Error ? error.message : "L'opération a échoué."
+      ),
+  });
   const isMatrix = kind === "matrice_conformite";
   // Only the CV adaptation is a toggle. The letter always consults the
   // model and always falls back to a plain, factual version when it
@@ -116,6 +138,14 @@ export function DossierPanel({
           </div>
         </div>
         <div className="row" style={{ gap: 8 }}>
+          <button
+            className="btn sm ghost"
+            disabled={exportDossier.isPending}
+            onClick={() => exportDossier.mutate()}
+            title="Archive ZIP des pièces approuvées, avec son manifeste"
+          >
+            {exportDossier.isPending ? "…" : "⤓ Exporter le dossier"}
+          </button>
           <select
             className="select"
             style={{ width: 210 }}

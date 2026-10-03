@@ -30,6 +30,7 @@ from app.api.routers import (
     approval,
     cvs,
     documents,
+    export,
     health,
     matching,
     notifications,
@@ -207,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(shortlists.router)
     app.include_router(documents.router)
     app.include_router(approval.router)
+    app.include_router(export.router)
     app.include_router(templates.router)
     app.include_router(tenders.router)
     app.include_router(schedules.router)
