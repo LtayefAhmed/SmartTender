@@ -671,3 +671,14 @@ export interface GenerationResult {
   refused: { label: string; reason: string }[];
   template: string;
 }
+
+/** One phase of the journey, counted. The dashboard reads four of these to
+ *  say what the platform does before it says how much of it it has done. */
+export interface JourneyPhase {
+  key: string;
+  label: string;
+  total: number;
+  done: number;
+  done_label: string;
+  href: string;
+}

@@ -1097,3 +1097,344 @@ pre.text-preview {
   border-radius: 3px;
   display: inline-block;
 }
+
+/* ==========================================================================
+   Le parcours — les quatre phases, sur le tableau de bord.
+   ==========================================================================
+   La profondeur est en CSS : perspective sur le conteneur, `translateZ` au
+   survol, ombres superposées. Une scène WebGL coûterait ~600 Ko et du GPU sur
+   une page de tableaux, pour des machines qui ont déjà manqué de mémoire en
+   faisant tourner cette pile. L'illusion est moins chère que la dépendance —
+   et sur un outil métier, une carte qui se soulève quand on la vise dit
+   « ceci est cliquable », là où un cube qui tourne ne dit rien.          */
+
+.journey {
+  margin-bottom: 22px;
+}
+
+.journey-head h2 {
+  font-size: 19px;
+  margin: 0 0 3px;
+  letter-spacing: -0.015em;
+}
+
+.journey-head p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.journey-track {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  /* La perspective vit sur le rail, pas sur chaque carte : sans cela chaque
+     élément a son propre point de fuite et la rangée se tord. */
+  perspective: 1200px;
+  perspective-origin: 50% 40%;
+}
+
+.phase {
+  flex: 1 1 0;
+  min-width: 0;
+  position: relative;
+  display: block;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: inherit;
+  text-decoration: none;
+  transform-style: preserve-3d;
+  transition:
+    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.2s;
+  animation: phase-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* Le liseré de teinte : il identifie la phase sans peindre toute la carte. */
+.phase::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: var(--tint);
+  opacity: 0.85;
+}
+
+.phase:hover,
+.phase:focus-visible {
+  transform: translateZ(26px) translateY(-3px);
+  border-color: var(--tint);
+  /* Deux ombres : une proche pour le contact, une lointaine pour la hauteur.
+     Une seule ombre lit comme un flou, deux lisent comme une distance. */
+  box-shadow:
+    0 2px 6px rgba(15, 23, 42, 0.06),
+    0 18px 38px -12px rgba(15, 23, 42, 0.18);
+  outline: none;
+}
+
+.phase-step {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--muted-2);
+}
+
+.phase-label {
+  font-weight: 650;
+  font-size: 13.5px;
+  margin-top: 2px;
+}
+
+.phase-total {
+  font-size: 30px;
+  font-weight: 680;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.phase-done {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.phase-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--panel-2);
+  overflow: hidden;
+  margin: 11px 0 9px;
+}
+
+.phase-bar i {
+  display: block;
+  height: 100%;
+  background: var(--tint);
+  border-radius: 2px;
+  /* Part de zéro : la barre se remplit en même temps que le compteur monte,
+     et les deux racontent la même chose. */
+  animation: bar-fill 0.9s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: 0.15s;
+}
+
+.phase-caption {
+  font-size: 11px;
+  color: var(--muted-2);
+  line-height: 1.45;
+}
+
+/* --- le lien entre deux phases ------------------------------------------ */
+.journey-link {
+  flex: 0 0 48px;
+  align-self: center;
+  height: 12px;
+  overflow: visible;
+}
+
+.journey-rail {
+  stroke: var(--line);
+  stroke-width: 1.5;
+}
+
+/* Un tiret qui parcourt le rail : le travail circule, et un caractère « → »
+   ne peut pas le dire. */
+.journey-pulse {
+  stroke: var(--blue);
+  stroke-width: 1.5;
+  stroke-dasharray: 7 31;
+  stroke-linecap: round;
+  animation: pulse-travel 2.4s linear infinite;
+}
+
+.journey-head-arrow {
+  fill: var(--line);
+}
+
+@keyframes phase-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes bar-fill {
+  from { transform: scaleX(0); transform-origin: left; }
+}
+
+@keyframes pulse-travel {
+  from { stroke-dashoffset: 38; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* En dessous de cette largeur la rangée devient une colonne et les flèches
+   n'ont plus de sens horizontal : on les retire plutôt que de les coucher. */
+@media (max-width: 900px) {
+  .journey-track { flex-direction: column; gap: 10px; perspective: none; }
+  .journey-link { display: none; }
+  .phase:hover, .phase:focus-visible { transform: translateY(-2px); }
+}
+
+/* Quelqu'un qui demande moins de mouvement le demande partout. Les états
+   finaux restent ; seuls les trajets disparaissent. */
+@media (prefers-reduced-motion: reduce) {
+  .phase,
+  .phase-bar i { animation: none; }
+  .phase { transition: border-color 0.2s; }
+  .phase:hover, .phase:focus-visible { transform: none; }
+  .journey-pulse { animation: none; opacity: 0; }
+}
+
+/* --- une ligne de la page Dossiers -------------------------------------- */
+/* Un bouton et non une div cliquable : le clavier y arrive seul, et un
+   lecteur d'écran annonce ce que c'est.                                    */
+.dossier {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 13px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.16s, box-shadow 0.2s, transform 0.2s;
+}
+
+.dossier:hover,
+.dossier:focus-visible {
+  border-color: var(--blue);
+  box-shadow: 0 6px 20px -10px rgba(15, 23, 42, 0.22);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.dossier-title {
+  font-weight: 620;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dossier-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 7px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.dossier-facts strong { color: var(--ink); font-weight: 650; }
+.dossier-facts .warn strong { color: var(--amber, #b45309); }
+
+@media (prefers-reduced-motion: reduce) {
+  .dossier { transition: border-color 0.16s; }
+  .dossier:hover, .dossier:focus-visible { transform: none; }
+}
+
+/* ==========================================================================
+   Fil d'Ariane de parcours, et mouvement général.
+   ========================================================================== */
+
+/* Il nomme la phase, pas l'URL. « matching › recherche » ne ferait que
+   répéter la barre d'adresse ; montrer les quatre phases et situer la
+   courante dit quelque chose que le lecteur n'avait pas.                  */
+.trail {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 26px 0;
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+}
+
+.trail-item { display: inline-flex; align-items: center; gap: 2px; }
+
+.trail-sep {
+  color: var(--muted-2);
+  font-style: normal;
+  margin: 0 5px;
+}
+
+.trail-link {
+  color: var(--muted-2);
+  text-decoration: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.trail-link:hover { color: var(--ink); background: var(--panel-2); }
+
+/* Les phases déjà traversées sont plus présentes que celles à venir : le
+   lecteur a fait ce chemin, il peut y revenir. */
+.trail-link.done { color: var(--muted); }
+.trail-link.ahead { opacity: 0.55; }
+
+.trail-current {
+  color: var(--ink);
+  font-weight: 650;
+  padding: 2px 4px;
+}
+
+/* --- transition de page ------------------------------------------------- */
+/* Six pixels et 220 ms : assez pour que l'œil enregistre un changement
+   d'écran, trop court pour qu'on attende. Au-delà, une navigation
+   quotidienne devient une attente quotidienne.                            */
+.page-enter {
+  animation: page-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* --- profondeur sur les surfaces existantes ----------------------------- */
+/* Les cartes gagnent une ombre au survol seulement si elles sont
+   actionnables ; une carte purement informative qui se soulève ment sur ce
+   qu'elle offre.                                                          */
+.stat {
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.2s;
+}
+
+.stat:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px -14px rgba(15, 23, 42, 0.25);
+}
+
+/* La modale arrive de dessous plutôt que d'apparaître : on comprend d'où
+   elle vient, donc où l'on retourne en la fermant. */
+.modal {
+  animation: modal-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.modal-scrim {
+  animation: scrim-in 0.18s ease-out;
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.99); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes scrim-in {
+  from { opacity: 0; }
+}
+
+/* Le lien de navigation actif : la barre latérale glisse au lieu de sauter. */
+.nav-link { transition: background 0.14s, color 0.14s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter,
+  .modal,
+  .modal-scrim { animation: none; }
+  .stat { transition: none; }
+  .stat:hover { transform: none; }
+}

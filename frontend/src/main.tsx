@@ -14,6 +14,7 @@ import { Schedules } from "./pages/Schedules";
 import { Sources } from "./pages/Sources";
 import { Notifications } from "./pages/Notifications";
 import { Admin } from "./pages/Admin";
+import { Dossiers } from "./pages/Dossiers";
 import { Templates } from "./pages/Templates";
 import "./styles.css";
 
@@ -34,6 +35,7 @@ const router = createBrowserRouter([
       { path: "upload", element: <Upload /> },
       { path: "matching/cv-import", element: <ImportCvs /> },
       { path: "matching/recherche", element: <ProfileSearch /> },
+      { path: "dossiers", element: <Dossiers /> },
       { path: "schedules", element: <Schedules /> },
       { path: "sources", element: <Sources /> },
       { path: "notifications", element: <Notifications /> },

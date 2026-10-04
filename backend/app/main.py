@@ -32,6 +32,7 @@ from app.api.routers import (
     documents,
     export,
     health,
+    journey,
     matching,
     notifications,
     profiles,
@@ -200,6 +201,7 @@ def create_app() -> FastAPI:
     install_exception_handlers(app)
 
     app.include_router(health.router)
+    app.include_router(journey.router)
     app.include_router(scrape.router)
     app.include_router(upload.router)
     app.include_router(cvs.router)

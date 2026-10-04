@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import Principal, get_session, require_principal
 from app.core.enums import ShortlistDecision
 from app.core.logging import get_logger
+from app.db.models.document import GeneratedDocument
 from app.db.models.shortlist import Shortlist
 from app.services.shortlist import (
     ShortlistLocked,
@@ -73,6 +74,25 @@ async def list_shortlists(
         .scalars()
         .all()
     )
+    # One grouped count rather than one request per row. A listing that makes
+    # the browser ask "how many documents?" twenty-five times is a table that
+    # takes a second to draw.
+    counts: dict[Any, int] = {}
+    if rows:
+        counted = await session.execute(
+            select(GeneratedDocument.shortlist_id, func.count())
+            .where(GeneratedDocument.shortlist_id.in_([row.id for row in rows]))
+            .where(GeneratedDocument.status != "superseded")
+            .group_by(GeneratedDocument.shortlist_id)
+        )
+        counts = dict(counted.all())
+
+    items = []
+    for row in rows:
+        payload = summarise(row, include_entries=False)
+        payload["documents"] = counts.get(row.id, 0)
+        items.append(payload)
+
     return {
         "total": total,
         "page": page,
@@ -80,7 +100,7 @@ async def list_shortlists(
         # Entries are omitted from a listing on purpose: a capture holds up to
         # twenty-eight candidates with their evidence passages, and a page of
         # twenty-five of those is megabytes for a screen that shows titles.
-        "items": [summarise(row, include_entries=False) for row in rows],
+        "items": items,
     }
 
 

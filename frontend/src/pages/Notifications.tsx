@@ -70,6 +70,15 @@ function Feed() {
     mutationFn: (id: string) => api.post(`/notifications/${id}/read`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
   });
+  // One action for the backlog. A badge showing 198 with only a per-row
+  // button is a counter that never goes down, and a counter that never goes
+  // down is one people learn to ignore.
+  const clearAll = useMutation({
+    mutationFn: () => api.post<{ cleared: number }>("/notifications/read-all"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
+  });
+
+  const unread = (feed.data?.items ?? []).filter((n) => n.status !== "read").length;
 
   if (feed.isLoading) return <Loading />;
   if ((feed.data?.items.length ?? 0) === 0)
@@ -77,6 +86,18 @@ function Feed() {
 
   return (
     <div className="stack">
+      {unread > 0 && (
+        <div className="row spread">
+          <span className="tiny muted">{unread} non lue(s) sur cette page</span>
+          <button
+            className="btn sm ghost"
+            disabled={clearAll.isPending}
+            onClick={() => clearAll.mutate()}
+          >
+            {clearAll.isPending ? "…" : "Tout marquer comme lu"}
+          </button>
+        </div>
+      )}
       {feed.data!.items.map((n) => {
         const unread = !n.read_at;
         const isDigest = (n.payload?.kind as string) === "digest";

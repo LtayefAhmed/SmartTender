@@ -128,6 +128,32 @@ async def mark_read(
     return NotificationRead.model_validate(row)
 
 
+@router.post("/notifications/read-all", summary="Mark every notification read")
+async def mark_all_read(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_principal),
+) -> dict[str, int]:
+    """Clear the backlog.
+
+    One statement rather than a loop: a user with two hundred unread rows
+    should not wait for two hundred round trips, and the count returned is
+    what the interface needs to update its badge without re-reading the list.
+    """
+    from sqlalchemy import update
+
+    result = await session.execute(
+        update(Notification)
+        .where(
+            Notification.user_id == principal.identity,
+            Notification.status != NotificationStatus.READ.value,
+        )
+        .values(status=NotificationStatus.READ.value, read_at=utc_now())
+    )
+    cleared = int(result.rowcount or 0)
+    logger.info("api.notifications_cleared", count=cleared, actor=principal.identity)
+    return {"cleared": cleared}
+
+
 @router.get(
     "/preferences",
     response_model=PreferenceRead,

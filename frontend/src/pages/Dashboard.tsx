@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { CompletenessStats, DashboardStats, Page, TenderSummary, Source } from "../api/types";
+import { Journey } from "../components/Journey";
 import { TopBar } from "../components/Layout";
 import { Badge, Card, Meter, StatTile, Loading, ErrorState, Dot } from "../components/ui";
 import { BAND_COLOR, BAND_LABEL, fmtDate, healthColor } from "../lib/format";
@@ -157,9 +158,15 @@ export function Dashboard() {
     <>
       <TopBar
         title="Tableau de bord"
-        sub="Vue d'ensemble de la veille et du pipeline d'ingestion"
+        sub="De la détection d'un appel d'offres au dossier de réponse"
       />
       <div className="content stack">
+        {/* The journey first, because the panels below it all describe one
+            phase. A reader who met the dashboard as a wall of ingestion
+            counters concluded the product was a scraper — which it stopped
+            being two modules ago. */}
+        <Journey />
+
         <div className="grid cols-4">
           {/* The headline is what can still be bid on. The archive stays
               visible underneath — it feeds duplicate detection and the win/loss
